@@ -17,6 +17,8 @@
   #wrap{height:100%; display:flex; align-items:center; justify-content:center; flex-direction:column;}
   .screen{display:none; flex-direction:column; align-items:center; gap:18px; width:min(980px,96vw);}
   .screen.on{display:flex;}
+  #scr-lobby{gap:12px; max-height:97vh; overflow-y:auto; justify-content:flex-start; padding:8px 4px;
+    scrollbar-width:thin; scrollbar-color:var(--edge) transparent;}
   h1.logo{font-size:56px; letter-spacing:6px; font-weight:900;
     background:linear-gradient(90deg,var(--p1),var(--p2)); -webkit-background-clip:text; background-clip:text; color:transparent;}
   .sub{color:var(--dim); margin-top:-12px; letter-spacing:2px;}
@@ -39,19 +41,19 @@
   .ptag{display:flex; align-items:center; gap:8px; font-weight:800; font-size:19px;}
   .dot{width:12px; height:12px; border-radius:50%;}
   #games{display:grid; grid-template-columns:repeat(3,1fr); gap:12px; width:100%;}
-  .gcard{background:var(--panel); border:1px solid var(--edge); border-radius:12px; padding:16px 10px;
+  .gcard{background:var(--panel); border:1px solid var(--edge); border-radius:12px; padding:11px 10px;
     text-align:center; cursor:pointer; transition:all .15s;}
   .gcard:hover{border-color:var(--gold); transform:translateY(-3px); background:var(--panel2);}
-  .gcard .ico{font-size:34px;}
-  .gcard .nm{font-weight:800; margin-top:8px; font-size:15px;}
+  .gcard .ico{font-size:29px;}
+  .gcard .nm{font-weight:800; margin-top:5px; font-size:14.5px;}
   .gcard .ds{color:var(--dim); font-size:11.5px; margin-top:5px; line-height:1.35;}
   .botrow{margin-top:8px; display:flex; gap:6px; justify-content:center; align-items:center;}
   .botlbl{color:var(--dim); font-size:12px;}
   .botchip{display:inline-block; width:24px; height:24px; line-height:24px; border-radius:6px;
     background:var(--panel2); border:1px solid var(--edge); font-size:13px; font-weight:800; cursor:pointer;}
   .botchip.onn{background:var(--gold); color:#222; border-color:var(--gold);}
-  table#score{width:100%; border-collapse:collapse; font-size:15px;}
-  #score th,#score td{padding:8px 10px; text-align:center; border-bottom:1px solid var(--edge);}
+  table#score{width:100%; border-collapse:collapse; font-size:14px;}
+  #score th,#score td{padding:5.5px 10px; text-align:center; border-bottom:1px solid var(--edge);}
   #score th:first-child,#score td:first-child{text-align:left;}
   #score .tot{font-weight:900; font-size:17px;}
   /* game screen */
@@ -81,7 +83,7 @@
   <!-- MENU -->
   <div class="screen on" id="scr-menu">
     <h1 class="logo">DUEL ROOM</h1>
-    <div class="sub">7 GAMES &middot; 1 RIVALRY &middot; FIRST TO 5</div>
+    <div class="sub">9 GAMES &middot; 1 RIVALRY &middot; HUMANS OR BOTS</div>
     <div class="card">
       <div class="row" style="margin-bottom:18px">
         <label style="color:var(--dim)">Your name</label>
@@ -92,6 +94,9 @@
         <span style="color:var(--dim)">or</span>
         <input type="text" class="code" id="codeIn" maxlength="4" placeholder="CODE">
         <button id="btnJoin">JOIN</button>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="hot" id="btnBot">🤖 PLAY VS BOT</button>
       </div>
       <div class="err" id="menuErr" style="margin-top:14px"></div>
     </div>
@@ -120,6 +125,20 @@
       <div class="ptag"><span class="dot" style="background:var(--p1)"></span><span id="lp1">P1</span></div>
       <div style="color:var(--gold); font-weight:900; letter-spacing:4px; font-size:22px">GAME LOBBY</div>
       <div class="ptag"><span id="lp2">P2</span><span class="dot" style="background:var(--p2)"></span></div>
+    </div>
+    <div id="lobbyWait" class="card" style="display:none; padding:12px 20px">
+      <div class="row" style="justify-content:space-between">
+        <div>Room code: <b style="color:var(--gold); letter-spacing:4px; font-size:20px" id="lobbyCode">----</b></div>
+        <div style="color:var(--dim)" id="lobbyWaitMsg">⏳ waiting for your rival — warm up on the bot!</div>
+        <button id="btnCopy2" style="padding:8px 14px; font-size:14px">Copy invite link</button>
+      </div>
+    </div>
+    <div id="botBar" class="row" style="display:none">
+      <span style="color:var(--dim)">Bot difficulty:</span>
+      <span class="botchip diffchip" data-d="0" style="width:auto;padding:0 10px">Rookie</span>
+      <span class="botchip diffchip" data-d="1" style="width:auto;padding:0 10px">Pro</span>
+      <span class="botchip diffchip" data-d="2" style="width:auto;padding:0 10px">👁 GOD MODE</span>
+      <button id="btnLeaveLobby" style="padding:6px 12px; font-size:13px; margin-left:14px">✕ leave</button>
     </div>
     <div id="games"></div>
     <div class="card" style="padding:14px 20px">
@@ -370,6 +389,9 @@ const Net = (() => {
 
   function startPing() {
     stopPing();
+    // re-send hello a few times — the first one can race the remote's data handler
+    setTimeout(() => safeSend({ t: 'hello', name: myName }), 700);
+    setTimeout(() => safeSend({ t: 'hello', name: myName }), 2000);
     pingTimer = setInterval(() => {
       safeSend({ t: 'ping', ts: performance.now() });
       // heartbeat watchdog: WebRTC close events can be slow/absent
@@ -395,6 +417,8 @@ const Net = (() => {
   }
 
   return {
+    // offline bot session: behave as host, no signaling needed
+    local(name) { destroy(); closedByUs = false; isHost = true; myName = name; },
     get isHost() { return isHost; },
     get myName() { return myName; },
     get peerName() { return peerName; },
@@ -559,6 +583,53 @@ regGame('sniper', (() => {
         SFX.shoot();
         if (hit) { flashes.push({ x: me.x, y: me.y, life: 0.4 }); SFX.hit(); }
       }
+    },
+
+    // ---- BOT ----
+    botRound(d) {
+      this._b = { x: 900, y: 270, a: Math.PI, wp: null, reload: 1.2 };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b) return;
+      this._botInbox.length = 0; // reads state directly
+      if (E.playing) {
+        // wander between waypoints
+        if (!b.wp || Math.hypot(b.wp[0] - b.x, b.wp[1] - b.y) < 20) {
+          for (let i = 0; i < 12; i++) {
+            const cand = [80 + Math.random() * 800, 60 + Math.random() * 420];
+            if (!walls.some(([x, y, w, h]) => circleRect(cand[0], cand[1], R + 4, x, y, w, h))) { b.wp = cand; break; }
+          }
+        }
+        if (b.wp) {
+          const dx = b.wp[0] - b.x, dy = b.wp[1] - b.y;
+          const l = Math.hypot(dx, dy) || 1;
+          const spd = SPEED * [0.55, 0.8, 1.0][d];
+          b.x += (dx / l) * spd * dt; b.y += (dy / l) * spd * dt;
+          for (const [x, y, w2, h] of walls) {
+            const c2 = circleRect(b.x, b.y, R, x, y, w2, h);
+            if (c2) { b.x = c2.x; b.y = c2.y; }
+          }
+        }
+        b.a = Math.atan2(me.y - b.y, me.x - b.x);
+        b.reload = Math.max(0, b.reload - dt);
+        if (b.reload === 0) {
+          const distMe = Math.hypot(me.x - b.x, me.y - b.y);
+          const tw = castWall(b.x, b.y, Math.cos(b.a), Math.sin(b.a));
+          const los = tw > distMe - R;
+          if (los || (d === 0 && Math.random() < 0.3)) {
+            b.reload = [2.3, 1.7, 1.15][d];
+            const err = (Math.random() - 0.5) * [0.22, 0.075, 0.010][d];
+            const a = b.a + err;
+            const dx2 = Math.cos(a), dy2 = Math.sin(a);
+            const tw2 = castWall(b.x, b.y, dx2, dy2);
+            const tc = rayCircle(b.x, b.y, dx2, dy2, me.x, me.y, R + 2);
+            const hit = tc < tw2;
+            this.onNet({ shot: [Math.round(b.x), Math.round(b.y), +a.toFixed(3), Math.round(hit ? tc : tw2), hit ? 1 : 0] });
+            if (hit) E.claimPoint(1 - E.me);
+          }
+        }
+      }
+      this.onNet({ p: [Math.round(b.x), Math.round(b.y), +b.a.toFixed(2)] });
     },
 
     draw() {
@@ -839,6 +910,95 @@ regGame('golf', (() => {
       }
     },
 
+    // ---- BOT (turn-based opponent) ----
+    botRound(d) {
+      this._b = { ball: null, vx: 0, vy: 0, thinkT: 0, rolling: false, strokes: 0, holed: false, pre: null };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b) return;
+      this._botInbox.length = 0;
+      if (!E.playing || matchDone) return;
+      if (b.hole !== holeIdx) { // new hole — reset bot ball
+        b.hole = holeIdx;
+        b.ball = { x: map.st[0], y: map.st[1] };
+        b.vx = 0; b.vy = 0; b.rolling = false; b.strokes = 0; b.holed = false;
+        b.thinkT = 0;
+      }
+      if (b.rolling) {
+        // simulate the bot's ball with the same physics
+        const sp = Math.hypot(b.vx, b.vy);
+        if (sp > 0) {
+          const decel = (inSand(b.ball.x, b.ball.y) ? 900 : 240) * dt;
+          const ns = Math.max(0, sp - decel);
+          if (ns < 12) { b.vx = 0; b.vy = 0; }
+          else { b.vx *= ns / sp; b.vy *= ns / sp; }
+          b.ball.x += b.vx * dt; b.ball.y += b.vy * dt;
+          for (const [x, y, w, h] of allWalls()) {
+            const c2 = circleRect(b.ball.x, b.ball.y, R, x, y, w, h);
+            if (c2) {
+              b.ball.x = c2.x; b.ball.y = c2.y;
+              const dot = b.vx * c2.nx + b.vy * c2.ny;
+              if (dot < 0) { b.vx = (b.vx - 2 * dot * c2.nx) * 0.85; b.vy = (b.vy - 2 * dot * c2.ny) * 0.85; SFX.bounce(); }
+            }
+          }
+          if (inWater(b.ball.x, b.ball.y)) {
+            b.strokes = Math.min(MAX_STROKES, b.strokes + 1);
+            b.ball.x = b.pre.x; b.ball.y = b.pre.y; b.vx = 0; b.vy = 0;
+            b.rolling = false;
+            this.onNet({ done: { x: Math.round(b.ball.x), y: Math.round(b.ball.y), h: 0, s: b.strokes } });
+            return;
+          }
+        }
+        const [hx, hy] = map.h;
+        const dd = Math.hypot(b.ball.x - hx, b.ball.y - hy);
+        const spd = Math.hypot(b.vx, b.vy);
+        if (dd < 18 && spd < 320 && spd > 0) {
+          b.vx += ((hx - b.ball.x) / (dd || 1)) * 500 * dt;
+          b.vy += ((hy - b.ball.y) / (dd || 1)) * 500 * dt;
+        }
+        if (dd < 10 && spd < 300) {
+          b.holed = true; b.rolling = false;
+          b.ball.x = hx; b.ball.y = hy;
+          this.onNet({ done: { x: hx, y: hy, h: 1, s: b.strokes } });
+        } else if (spd === 0) {
+          b.rolling = false;
+          if (b.strokes >= MAX_STROKES) { b.holed = true; this.onNet({ done: { x: Math.round(b.ball.x), y: Math.round(b.ball.y), h: 1, s: MAX_STROKES } }); }
+          else this.onNet({ done: { x: Math.round(b.ball.x), y: Math.round(b.ball.y), h: 0, s: b.strokes } });
+        } else {
+          this.onNet({ b: [Math.round(b.ball.x), Math.round(b.ball.y)] });
+        }
+        return;
+      }
+      // my turn? (bot is player 1)
+      if (turn === 1 && phase === 'aim' && !b.holed && !holed[1]) {
+        b.thinkT += dt;
+        if (b.thinkT > 1.15) {
+          b.thinkT = 0;
+          const [hx, hy] = map.h;
+          let tx = hx, ty = hy;
+          let dist = Math.hypot(hx - b.ball.x, hy - b.ball.y);
+          // ideal power: exact roll-out distance (v = sqrt(2*decel*dist))
+          let pow = Math.sqrt(2 * 240 * dist) * 1.02;
+          // god lays up short of water on the direct line
+          if (d === 2) {
+            for (let f = 0.1; f < 1; f += 0.05) {
+              const px = b.ball.x + (hx - b.ball.x) * f, py = b.ball.y + (hy - b.ball.y) * f;
+              if (inWater(px, py)) { pow = Math.sqrt(2 * 240 * (dist * Math.max(0.05, f - 0.18))); break; }
+            }
+          }
+          const aerr = (Math.random() - 0.5) * [0.24, 0.09, 0.016][d];
+          const perr = 1 + (Math.random() - 0.5) * [0.36, 0.16, 0.03][d];
+          const ang = Math.atan2(ty - b.ball.y, tx - b.ball.x) + aerr;
+          const v = clamp(pow * perr, 90, 640);
+          b.pre = { x: b.ball.x, y: b.ball.y };
+          b.vx = Math.cos(ang) * v; b.vy = Math.sin(ang) * v;
+          b.strokes++;
+          b.rolling = true;
+          this.onNet({ stroke: b.strokes });
+        }
+      }
+    },
+
     draw() {
       const c = E.ctx;
       c.fillStyle = '#1e4d2b'; c.fillRect(0, 0, 960, 540);
@@ -1045,6 +1205,47 @@ regGame('pong', (() => {
       }
     },
 
+    // ---- BOT (right paddle) ----
+    botRound(d) {
+      this._b = { y: 270, err: (Math.random() - 0.5) * [140, 50, 0][d], prevX: 480, claimed: false };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b) return;
+      this._botInbox.length = 0; // pong bot reads state directly
+      const plane = 960 - 42 - PW;
+      let target = 270;
+      if (ball.vx > 0) {
+        if (d === 2) { // project with wall bounces
+          let t = (plane - BR - ball.x) / ball.vx;
+          let y = ball.y + ball.vy * t;
+          const span = 500 - 40; // bounce range 20..520 minus radius margins
+          y = ((y - 20 - BR) % (2 * (span))); if (y < 0) y += 2 * span;
+          y = y > span ? 2 * span - y : y;
+          target = y + 20 + BR;
+        } else target = ball.y + b.err;
+      }
+      const spd = [250, 400, 1100][d];
+      b.y = clamp(b.y + clamp(target - b.y, -spd * dt, spd * dt), 20 + PH / 2, 520 - PH / 2);
+      this.onNet({ hp: undefined, pp: Math.round(b.y) });
+      if (E.playing) {
+        // bot paddle hit (mirror of my swept check)
+        const crossed = b.prevX <= plane && ball.x + BR > plane && ball.vx > 0;
+        if (crossed) {
+          const tc = (plane - b.prevX) / (ball.x - b.prevX || 1);
+          const yc = lerp(ball.y - ball.vy * dt, ball.y, clamp(tc, 0, 1));
+          if (Math.abs(yc - b.y) < PH / 2 + BR) {
+            const off = clamp((yc - b.y) / (PH / 2), -1, 1);
+            speed = Math.min(900, speed * 1.055);
+            const ang = off * 0.9;
+            this.onNet({ hb: [Math.round(plane - BR), Math.round(yc), Math.round(Math.cos(ang) * speed * -1), Math.round(Math.sin(ang) * speed + off * 60), Math.round(speed)] });
+            b.err = (Math.random() - 0.5) * [140, 50, 0][d]; // new error each rally
+          }
+        }
+        b.prevX = ball.x + BR;
+        if (ball.x > 990 && !b.claimed) { b.claimed = true; E.claimPoint(E.me); }
+      }
+    },
+
     draw() {
       const c = E.ctx;
       c.fillStyle = '#0e2a4a'; c.fillRect(0, 0, 960, 540);
@@ -1218,6 +1419,83 @@ regGame('tanks', (() => {
       if (d.die) { boom(d.die[0], d.die[1], true); foeI = null; foe.clear(); this._foeDead = true; }
     },
 
+    // ---- BOT ----
+    botRound(d) {
+      this._b = { x: 890, y: 470, h: 0.7 + Math.PI, t: 0.7 + Math.PI, cd: 1, wp: null, wpT: 0, dead: false, prot: 1.0 };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b || b.dead) { this._botInbox.length = 0; return; }
+      this._botInbox.length = 0; // reads state directly
+      if (E.playing) {
+        b.wpT -= dt;
+        // dodge incoming shells (pro/god)
+        let dodge = null;
+        if (d > 0) {
+          for (const s of shells) {
+            const dx = b.x - s.x, dy = b.y - s.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < [0, 110, 170][d]) {
+              const toward = (s.vx * dx + s.vy * dy) / (dist || 1);
+              if (toward > 60) { dodge = [-s.vy, s.vx]; break; } // perpendicular
+            }
+          }
+        }
+        if (dodge) {
+          b.wp = [b.x + dodge[0], b.y + dodge[1]]; b.wpT = 0.4;
+        } else if (!b.wp || b.wpT <= 0 || Math.hypot(b.wp[0] - b.x, b.wp[1] - b.y) < 30) {
+          for (let i = 0; i < 12; i++) {
+            const cand = [90 + Math.random() * 780, 60 + Math.random() * 420];
+            if (!walls.some(([x, y, w, h]) => circleRect(cand[0], cand[1], TR + 6, x, y, w, h))) { b.wp = cand; b.wpT = 2.5; break; }
+          }
+        }
+        if (b.wp) {
+          const ta = Math.atan2(b.wp[1] - b.y, b.wp[0] - b.x);
+          let da = ta - b.h;
+          while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+          b.h += clamp(da, -TURN * dt, TURN * dt);
+          if (Math.abs(da) < 1.1) {
+            b.x += Math.cos(b.h) * SPEED * [0.6, 0.85, 1][d] * dt;
+            b.y += Math.sin(b.h) * SPEED * [0.6, 0.85, 1][d] * dt;
+            for (const [x, y, w, h] of walls) {
+              const c2 = circleRect(b.x, b.y, TR, x, y, w, h);
+              if (c2) { b.x = c2.x; b.y = c2.y; }
+            }
+          }
+        }
+        // turret + fire
+        const err = (Math.random() - 0.5) * [0.30, 0.10, 0.012][d];
+        b.t = Math.atan2(me.y - b.y, me.x - b.x) + err;
+        b.cd = Math.max(0, b.cd - dt);
+        if (b.cd === 0 && !dead) {
+          const distMe = Math.hypot(me.x - b.x, me.y - b.y);
+          const tw = castWall(b.x, b.y, Math.cos(b.t), Math.sin(b.t));
+          const los = tw > distMe - TR;
+          if (los || Math.random() < [0.25, 0.35, 0.5][d]) {
+            b.cd = [1.4, 0.85, 0.5][d];
+            const sx = b.x + Math.cos(b.t) * (TR + 8), sy = b.y + Math.sin(b.t) * (TR + 8);
+            this.onNet({ fire: [Math.round(sx), Math.round(sy), +b.t.toFixed(3)] });
+          }
+        }
+        // bot hit detection (mirror of mine, owner = enemy side)
+        b.prot = Math.max(0, b.prot - dt);
+        if (b.prot <= 0) {
+          for (const s of shells) {
+            if (s.deadFx) continue;
+            const mine = s.owner === 1 - E.me;
+            const armed = !mine || s.bounces > 0 || s.life < 2.5;
+            if (armed && dist2(s.x, s.y, b.x, b.y) < (TR + SR) * (TR + SR)) {
+              s.deadFx = true;
+              b.dead = true;
+              this.onNet({ die: [Math.round(b.x), Math.round(b.y)] });
+              E.claimPoint(E.me);
+              break;
+            }
+          }
+        }
+      }
+      if (!b.dead) this.onNet({ tk: [Math.round(b.x), Math.round(b.y), +b.h.toFixed(2), +b.t.toFixed(2)] });
+    },
+
     draw() {
       const c = E.ctx;
       c.save();
@@ -1313,20 +1591,24 @@ regGame('tanks', (() => {
 </script>
 <script>
 // ---- SUMO: shove your rival off a shrinking ice platform ----
-// Physics model: each client owns its body. The opponent is DEAD-RECKONED
-// (latest packet + velocity extrapolation) so collisions land where they look.
-// Collisions = impulse (restitution) + sustained shove force, with a momentum
-// advantage while dashing. Both clients run the mirrored computation.
+// Bodies grind (near-inelastic contact, sustained shove). SPACE is the SPECIAL
+// PUSH: in range it launches the ENEMY — guaranteed. The only counter is doing
+// the same attack as you get attacked (both push windows overlap = CLASH, both
+// just stagger). Out of range, space is a short lunge to close the gap.
 regGame('sumo', (() => {
-  let E, me, foe, foeR, radius, elapsed, fell, foeFell, dashCd, dashT, parts, hitGate;
+  let E, me, foe, foeR, radius, elapsed, fell, foeFell, parts, hitGate, waves;
+  let pushCd, pushT, lastPushAt;
   const R = 17, ACC = 850, FRICTION = 1.5;
   const CX = 480, CY = 270, R0 = 205, RMIN = 88;
-  const PUNCH = 1.18, SHOVE = 3.4, DASH_V = 430, DASH_T = 0.28, DASH_CD = 1.2;
+  const PUNCH = 1.18, SHOVE = 3.4;
+  const RANGE = 100, RANGE_V = 120;       // attacker check / victim generosity
+  const LAUNCH = 540, CLASH_KB = 190;
+  const PUSH_CD = 1.4, LUNGE_CD = 0.35, CLASH_WIN = 450; // ms
 
   return {
     name: 'Sumo', ico: '🥋',
-    desc: 'Shrinking ice ring. Shove them off. Don\'t slip.',
-    controls: 'WASD to skate · SPACE to dash (heavy hits!) · push your rival off the ice',
+    desc: 'Grind, shove, and SPACE-push them off. Counter a push by pushing back!',
+    controls: 'WASD skate · SPACE = special push: launches your rival — only countered by pushing back at the same time',
 
     init(e) { E = e; },
 
@@ -1335,21 +1617,26 @@ regGame('sumo', (() => {
         ? { x: CX - 120, y: CY, vx: 0, vy: 0 }
         : { x: CX + 120, y: CY, vx: 0, vy: 0 };
       foe = makeInterp();
-      foeR = null;               // dead-reckoned render/collision position
+      foeR = null;
       radius = R0; elapsed = 0;
       fell = false; foeFell = false;
-      dashCd = 0; dashT = 0; hitGate = 0;
-      parts = [];
+      pushCd = 0; pushT = 0; lastPushAt = -99999;
+      hitGate = 0;
+      parts = []; waves = [];
       this._lastSent = 0;
     },
 
-    dbg() { // test hook (?dev)
+    dbg() {
       return {
         x: me.x, y: me.y, vx: me.vx, vy: me.vy,
         fx: foeR ? foeR.x : null, fy: foeR ? foeR.y : null,
         d: foeR ? Math.hypot(me.x - foeR.x, me.y - foeR.y) : null,
-        fell, foeFell, radius,
+        fell, foeFell, radius, pushCd,
       };
+    },
+
+    _burst(x, y, n, col, spread) {
+      for (let i = 0; i < n; i++) parts.push({ x, y, vx: (Math.random() - 0.5) * spread, vy: (Math.random() - 0.5) * spread, life: 0.4, c: col });
     },
 
     update(dt) {
@@ -1358,16 +1645,15 @@ regGame('sumo', (() => {
         if (elapsed > 5) radius = Math.max(RMIN, R0 - (elapsed - 5) * 9);
       }
       hitGate = Math.max(0, hitGate - dt);
-      dashCd = Math.max(0, dashCd - dt);
-      dashT = Math.max(0, dashT - dt);
+      pushCd = Math.max(0, pushCd - dt);
+      pushT = Math.max(0, pushT - dt);
 
-      // ---- dead-reckon the opponent from their latest packet ----
+      // dead-reckon the opponent
       const pk = foe.latest();
       if (pk && !foeFell) {
         const age = clamp((performance.now() - pk._t) / 1000, 0, 0.22);
-        foeR = { x: pk.x + pk.vx * age, y: pk.y + pk.vy * age, vx: pk.vx, vy: pk.vy, dash: pk.dash && age < 0.3 };
-      } else if (foeFell) foeR = foeR; // keep last spot for the splash
-      else foeR = null;
+        foeR = { x: pk.x + pk.vx * age, y: pk.y + pk.vy * age, vx: pk.vx, vy: pk.vy, push: !!pk.push };
+      } else if (!foeFell) foeR = null;
 
       if (E.playing && !fell) {
         let ax = 0, ay = 0;
@@ -1377,56 +1663,59 @@ regGame('sumo', (() => {
           const l = Math.hypot(ax, ay);
           me.vx += (ax / l) * ACC * dt; me.vy += (ay / l) * ACC * dt;
         }
-        if (E.keys.has(' ') && dashCd === 0 && (ax || ay)) {
-          const l = Math.hypot(ax, ay) || 1;
-          me.vx += (ax / l) * DASH_V; me.vy += (ay / l) * DASH_V;
-          dashCd = DASH_CD; dashT = DASH_T;
-          SFX.go();
-          for (let i = 0; i < 8; i++) parts.push({ x: me.x, y: me.y, vx: -(ax / l) * 80 + (Math.random() - 0.5) * 90, vy: -(ay / l) * 80 + (Math.random() - 0.5) * 90, life: 0.4, c: '#bfe9ff' });
+
+        // ---- SPECIAL PUSH ----
+        if (E.keys.has(' ') && pushCd === 0) {
+          const foeDist = foeR && !foeFell ? Math.hypot(foeR.x - me.x, foeR.y - me.y) : Infinity;
+          if (foeDist < RANGE) {
+            // the real thing: launch event — the victim's client applies it
+            pushT = 0.3; lastPushAt = performance.now();
+            pushCd = PUSH_CD;
+            const nx = (foeR.x - me.x) / foeDist, ny = (foeR.y - me.y) / foeDist;
+            me.vx += nx * 190; me.vy += ny * 190; // step into the shove
+            waves.push({ x: me.x, y: me.y, age: 0, col: E.colors[E.me] });
+            SFX.draw(); SFX.tank();
+            E.gsend({ sp: [Math.round(me.x), Math.round(me.y)] });
+          } else {
+            // out of range: quick lunge to close the gap (cheap cooldown)
+            pushCd = LUNGE_CD;
+            let lx = ax, ly = ay;
+            if (!lx && !ly && foeR) { const d = foeDist || 1; lx = (foeR.x - me.x) / d; ly = (foeR.y - me.y) / d; }
+            const l = Math.hypot(lx, ly) || 1;
+            me.vx += (lx / l) * 300; me.vy += (ly / l) * 300;
+            SFX.go();
+            this._burst(me.x, me.y, 6, '#bfe9ff', 140);
+          }
         }
-        // ice friction (grippy enough to hold your ground)
+
+        // ice friction
         me.vx *= Math.max(0, 1 - FRICTION * dt);
         me.vy *= Math.max(0, 1 - FRICTION * dt);
         const sp = Math.hypot(me.vx, me.vy);
         if (sp > 800) { me.vx *= 800 / sp; me.vy *= 800 / sp; }
         me.x += me.vx * dt; me.y += me.vy * dt;
 
-        // ---- collision vs dead-reckoned opponent (mirrored on both clients) ----
+        // ---- body contact: near-inelastic grind + sustained shove ----
         if (foeR && !foeFell) {
           const dx = me.x - foeR.x, dy = me.y - foeR.y;
           const d = Math.hypot(dx, dy);
           if (d < R * 2 && d > 0.001) {
             const nx = dx / d, ny = dy / d;
-            // hard separation of my body (dead reckoning keeps both views close)
             const overlap = R * 2 - d;
             me.x += nx * overlap * 0.8;
             me.y += ny * overlap * 0.8;
-            // impulse with restitution — applied while approaching
             const rvx = me.vx - foeR.vx, rvy = me.vy - foeR.vy;
             const vn = rvx * nx + rvy * ny;
             if (vn < 0) {
-              // Bodies are meat, not rubber: base collisions are near-inelastic
-              // (thud, stay engaged, grind). The DASH carries the bounce — a
-              // dash hit on a non-dasher launches them.
-              let share = 0.5, rest = 0.15;
-              const meDash = dashT > 0, foeDash = !!foeR.dash;
-              if (meDash && !foeDash) { share = 0.22; rest = 0.7; }
-              else if (!meDash && foeDash) { share = 0.88; rest = 0.7; }
-              else if (meDash && foeDash) { rest = 0.55; }
-              const j = -(1 + rest) * vn * share * PUNCH;
+              const j = -(1 + 0.15) * vn * 0.5 * PUNCH;
               me.vx += nx * j; me.vy += ny * j;
               if (hitGate === 0) {
                 hitGate = 0.18;
                 SFX.paddle();
-                if (-vn > 260) { SFX.hit(); }
-                const px = (me.x + foeR.x) / 2, py = (me.y + foeR.y) / 2;
-                const nP = clamp(Math.round(-vn / 40), 4, 14);
-                for (let i = 0; i < nP; i++) parts.push({ x: px, y: py, vx: (Math.random() - 0.5) * (100 + -vn * 0.5), vy: (Math.random() - 0.5) * (100 + -vn * 0.5), life: 0.35, c: '#fff' });
+                this._burst((me.x + foeR.x) / 2, (me.y + foeR.y) / 2, clamp(Math.round(-vn / 50), 3, 10), '#fff', 100 + -vn * 0.4);
               }
             }
-            // sustained shove: their pressing speed bleeds into me every frame,
-            // so a driving opponent bulldozes a passive one
-            const press = foeR.vx * nx + foeR.vy * ny; // their speed along foe->me
+            const press = foeR.vx * nx + foeR.vy * ny;
             if (press > 0) {
               me.vx += nx * press * SHOVE * dt;
               me.vy += ny * press * SHOVE * dt;
@@ -1445,17 +1734,131 @@ regGame('sumo', (() => {
       }
       parts.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; });
       parts = parts.filter((p) => p.life > 0);
+      waves.forEach((w) => (w.age += dt));
+      waves = waves.filter((w) => w.age < 0.45);
 
       this._lastSent += dt;
-      if (this._lastSent > 1 / 45 && !fell) {   // 45 Hz — collisions want fresh data
+      if (this._lastSent > 1 / 45 && !fell) {
         this._lastSent = 0;
-        E.gsend({ su: [Math.round(me.x), Math.round(me.y), Math.round(me.vx), Math.round(me.vy), dashT > 0 ? 1 : 0] });
+        E.gsend({ su: [Math.round(me.x), Math.round(me.y), Math.round(me.vx), Math.round(me.vy), pushT > 0 ? 1 : 0] });
       }
     },
 
     onNet(d) {
-      if (d.su) foe.push({ x: d.su[0], y: d.su[1], vx: d.su[2] || 0, vy: d.su[3] || 0, dash: !!d.su[4] });
+      if (d.su) foe.push({ x: d.su[0], y: d.su[1], vx: d.su[2] || 0, vy: d.su[3] || 0, push: !!d.su[4] });
+      if (d.sp && !fell) {
+        // opponent's special push, resolved on MY client (I own my body)
+        const [px, py] = d.sp;
+        waves.push({ x: px, y: py, age: 0, col: E.colors[1 - E.me] });
+        const dx = me.x - px, dy = me.y - py;
+        const dd = Math.hypot(dx, dy) || 1;
+        if (dd < RANGE_V) {
+          const nx = dx / dd, ny = dy / dd;
+          if (performance.now() - lastPushAt < CLASH_WIN || pushT > 0) {
+            // CLASH — the counter: both just stagger
+            me.vx += nx * CLASH_KB; me.vy += ny * CLASH_KB;
+            waves.push({ x: (me.x + px) / 2, y: (me.y + py) / 2, age: 0, col: '#ffffff' });
+            this._burst((me.x + px) / 2, (me.y + py) / 2, 16, '#ffd166', 320);
+            SFX.hit();
+            E.gsend({ cl: 1 });
+          } else {
+            // launched!
+            me.vx += nx * LAUNCH; me.vy += ny * LAUNCH;
+            this._burst(me.x, me.y, 14, '#fff', 260);
+            SFX.hit(); SFX.boom();
+          }
+        }
+      }
+      if (d.cl) {
+        // my push got countered — I stagger back too
+        if (foeR) {
+          const dx = me.x - foeR.x, dy = me.y - foeR.y;
+          const dd = Math.hypot(dx, dy) || 1;
+          me.vx += (dx / dd) * CLASH_KB; me.vy += (dy / dd) * CLASH_KB;
+        }
+        waves.push({ x: me.x, y: me.y, age: 0, col: '#ffffff' });
+        SFX.hit();
+      }
       if (d.fell) { foeFell = true; if (foeR) { foeR.x = d.fell[0]; foeR.y = d.fell[1]; } SFX.boom(); }
+    },
+
+    // ---- BOT ----
+    botRound(d) {
+      this._b = { x: CX + 120, y: CY, vx: 0, vy: 0, pushCd: 1, lastPush: -9999, fell: false };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b || b.fell) { this._botInbox.length = 0; return; }
+      // react to MY special push (victim logic runs on the victim: the bot)
+      for (const m of this._botInbox) {
+        if (m.sp && E.playing) {
+          const dx = b.x - m.sp[0], dy = b.y - m.sp[1];
+          const dd = Math.hypot(dx, dy) || 1;
+          if (dd < RANGE_V) {
+            const nx = dx / dd, ny = dy / dd;
+            if (performance.now() - b.lastPush < CLASH_WIN) {
+              b.vx += nx * CLASH_KB; b.vy += ny * CLASH_KB;
+              this.onNet({ cl: 1 }); // I stagger too
+            } else {
+              b.vx += nx * LAUNCH; b.vy += ny * LAUNCH;
+            }
+          }
+        }
+      }
+      this._botInbox.length = 0;
+      if (E.playing) {
+        b.pushCd = Math.max(0, b.pushCd - dt);
+        const distC = Math.hypot(b.x - CX, b.y - CY);
+        const margin = [18, 38, 60][d];
+        let ax, ay;
+        if (distC > radius - margin && (d > 0 || Math.random() < 0.75)) {
+          // steer back to safety
+          ax = CX - b.x; ay = CY - b.y;
+        } else {
+          // hunt the player (god leads the target)
+          const lead = d === 2 ? 0.22 : 0;
+          ax = (me.x + me.vx * lead) - b.x; ay = (me.y + me.vy * lead) - b.y;
+        }
+        const al = Math.hypot(ax, ay) || 1;
+        const acc = [640, 850, 950][d];
+        b.vx += (ax / al) * acc * dt; b.vy += (ay / al) * acc * dt;
+        b.vx *= Math.max(0, 1 - FRICTION * dt);
+        b.vy *= Math.max(0, 1 - FRICTION * dt);
+        const sp = Math.hypot(b.vx, b.vy);
+        if (sp > 800) { b.vx *= 800 / sp; b.vy *= 800 / sp; }
+        b.x += b.vx * dt; b.y += b.vy * dt;
+        // grind vs the player (mirror of the body-contact rules)
+        const dx = b.x - me.x, dy = b.y - me.y;
+        const dd = Math.hypot(dx, dy);
+        if (dd < R * 2 && dd > 0.001) {
+          const nx = dx / dd, ny = dy / dd;
+          const overlap = R * 2 - dd;
+          b.x += nx * overlap * 0.8; b.y += ny * overlap * 0.8;
+          const rvx = b.vx - me.vx, rvy = b.vy - me.vy;
+          const vn = rvx * nx + rvy * ny;
+          if (vn < 0) { const j = -(1 + 0.15) * vn * 0.5 * PUNCH; b.vx += nx * j; b.vy += ny * j; }
+          const press = me.vx * nx + me.vy * ny;
+          if (press > 0) { b.vx += nx * press * SHOVE * dt; b.vy += ny * press * SHOVE * dt; }
+        }
+        // special push: in range, off cooldown — god times it & pre-clashes
+        const pd = Math.hypot(me.x - b.x, me.y - b.y);
+        if (pd < RANGE && b.pushCd === 0) {
+          const meNearEdge = Math.hypot(me.x - CX, me.y - CY) > radius - 70;
+          const rate = [0.55, 1.8, 99][d] * (meNearEdge ? 3 : 1);
+          const anticipate = d === 2 && pushCd === 0 && Math.hypot(me.vx, me.vy) > 250;
+          if (Math.random() < rate * dt || (d === 2 && (meNearEdge || anticipate))) {
+            b.pushCd = 1.4; b.lastPush = performance.now();
+            this.onNet({ sp: [Math.round(b.x), Math.round(b.y)] });
+          }
+        }
+        // fell off?
+        if (distC > radius + R * 0.4) {
+          b.fell = true;
+          this.onNet({ fell: [Math.round(b.x), Math.round(b.y)] });
+          E.claimPoint(E.me);
+        }
+      }
+      // stream state into the normal net path
+      this.onNet({ su: [Math.round(b.x), Math.round(b.y), Math.round(b.vx), Math.round(b.vy), (performance.now() - b.lastPush < 300) ? 1 : 0] });
     },
 
     draw() {
@@ -1475,13 +1878,20 @@ regGame('sumo', (() => {
       }
       c.strokeStyle = 'rgba(50,90,130,0.35)'; c.lineWidth = 3;
       c.beginPath(); c.arc(CX, CY, 34, 0, 7); c.stroke();
-      const drawP = (p, col, down, dashing) => {
+      // shockwaves
+      for (const w of waves) {
+        const t = w.age / 0.45;
+        c.strokeStyle = w.col; c.globalAlpha = (1 - t) * 0.7; c.lineWidth = 4 - t * 3;
+        c.beginPath(); c.arc(w.x, w.y, 20 + t * RANGE, 0, 7); c.stroke();
+        c.globalAlpha = 1;
+      }
+      const drawP = (p, col, down, pushing) => {
         if (down) return;
         c.fillStyle = 'rgba(0,0,0,0.25)';
         c.beginPath(); c.ellipse(p.x, p.y + R * 0.72, R * 0.95, R * 0.4, 0, 0, 7); c.fill();
-        if (dashing) { // dash trail glow
-          c.fillStyle = col; c.globalAlpha = 0.3;
-          c.beginPath(); c.arc(p.x - (p.vx || 0) * 0.03, p.y - (p.vy || 0) * 0.03, R * 1.1, 0, 7); c.fill();
+        if (pushing) {
+          c.fillStyle = col; c.globalAlpha = 0.35;
+          c.beginPath(); c.arc(p.x, p.y, R * 1.35, 0, 7); c.fill();
           c.globalAlpha = 1;
         }
         c.fillStyle = col;
@@ -1490,16 +1900,21 @@ regGame('sumo', (() => {
         c.strokeStyle = '#fff'; c.lineWidth = 4;
         c.beginPath(); c.arc(p.x, p.y, R - 4, -2.5, -0.6); c.stroke();
       };
-      if (foeR) drawP(foeR, E.colors[1 - E.me], foeFell, foeR.dash);
-      drawP(me, E.colors[E.me], fell, dashT > 0);
+      if (foeR) drawP(foeR, E.colors[1 - E.me], foeFell, foeR.push);
+      drawP(me, E.colors[E.me], fell, pushT > 0);
       for (const p of parts) {
         c.fillStyle = p.c; c.globalAlpha = Math.min(1, p.life * 2.2);
         c.fillRect(p.x - 2, p.y - 2, 4, 4); c.globalAlpha = 1;
       }
       if (!fell) {
         c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(me.x - 16, me.y - 30, 32, 5);
-        c.fillStyle = dashCd === 0 ? '#3ddc84' : '#ffd166';
-        c.fillRect(me.x - 16, me.y - 30, 32 * (1 - dashCd / DASH_CD), 5);
+        c.fillStyle = pushCd === 0 ? '#3ddc84' : '#ffd166';
+        c.fillRect(me.x - 16, me.y - 30, 32 * (1 - pushCd / PUSH_CD), 5);
+        // range hint: ring segment when foe is push-able
+        if (foeR && !foeFell && Math.hypot(foeR.x - me.x, foeR.y - me.y) < RANGE && pushCd === 0) {
+          c.strokeStyle = '#3ddc84'; c.globalAlpha = 0.5; c.lineWidth = 2;
+          c.beginPath(); c.arc(me.x, me.y, R + 5, 0, 7); c.stroke(); c.globalAlpha = 1;
+        }
       }
       if (E.playing && elapsed < 5) {
         c.fillStyle = 'rgba(255,255,255,0.55)'; c.font = 'bold 15px system-ui'; c.textAlign = 'center';
@@ -1825,6 +2240,83 @@ regGame('bomb', (() => {
       if (d.bd != null && bots[d.bd]) { bots[d.bd].alive = false; SFX.boom(); }
     },
 
+    // ---- OPPONENT BOT (plays as P2 with 3 lives) ----
+    botRound(d) {
+      const spawn = cellXY(COLS - 1, ROWS - 1);
+      this._b = {
+        x: spawn[0], y: spawn[1], spawn,
+        lives: LIVES, dead: false, respawnT: 0, prot: 1.5,
+        speed: [110, 130, 150][d], radius: 2, maxBombs: 1, bombsLeft: 1,
+        think: 0.6, path: null,
+      };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b) return;
+      this._botInbox.length = 0; // shared closure state, no messages needed
+      b.prot = Math.max(0, b.prot - dt);
+      if (b.dead && b.lives > 0 && E.playing) {
+        b.respawnT -= dt;
+        if (b.respawnT <= 0) { b.dead = false; b.x = b.spawn[0]; b.y = b.spawn[1]; b.prot = 2.5; }
+      }
+      if (!E.playing || b.dead || foeDead) return;
+      // think
+      b.think -= dt;
+      if (b.think <= 0) {
+        b.think = [0.4, 0.2, 0.11][d];
+        const [cx, cy] = cellAt(b.x, b.y);
+        const danger = dangerMap();
+        let path = null;
+        if (danger[key(cx, cy)] && (d > 0 || Math.random() > 0.2)) {
+          path = bfs(cx, cy, (x, y) => !danger[key(x, y)], danger, true);
+        } else {
+          const nearCrate = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => inGrid(cx + dx, cy + dy) && grid[cy + dy][cx + dx] === 1);
+          const [mcx, mcy] = cellAt(me.x, me.y);
+          const nearMe = Math.abs(mcx - cx) + Math.abs(mcy - cy) <= [1, 2, 3][d];
+          if (b.bombsLeft > 0 && (nearCrate || nearMe) && Math.random() < [0.35, 0.6, 0.85][d]) {
+            const nb = placeBomb('opp', cx, cy, b.radius);
+            if (nb) {
+              b.bombsLeft--; nb.onDone = () => b.bombsLeft++;
+              this.onNet({ bomb: undefined }); // (bomb already in shared sim)
+              const d2m = dangerMap();
+              path = bfs(cx, cy, (x, y) => !d2m[key(x, y)], d2m, true);
+            }
+          }
+          if (!path) {
+            const targets = (x, y) =>
+              [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => inGrid(x + dx, y + dy) && grid[y + dy][x + dx] === 1)
+              || powerups.live[key(x, y)] != null
+              || (d === 2 && Math.abs(cellAt(me.x, me.y)[0] - x) + Math.abs(cellAt(me.x, me.y)[1] - y) <= 2);
+            path = bfs(cx, cy, targets, danger, false);
+          }
+        }
+        b.path = path && path.length > 1 ? path.slice(1) : null;
+      }
+      // move
+      if (b.path && b.path.length) {
+        const [tx, ty] = cellXY(b.path[0][0], b.path[0][1]);
+        const dx = tx - b.x, dy = ty - b.y;
+        if (Math.hypot(dx, dy) < 6) b.path.shift();
+        else moveActor(b, dx, dy, dt, b.speed);
+      }
+      // pickups
+      const [pcx, pcy] = cellAt(b.x, b.y);
+      const pu = powerups.live[key(pcx, pcy)];
+      if (pu) {
+        delete powerups.live[key(pcx, pcy)];
+        if (pu === 'bomb') { b.maxBombs = Math.min(4, b.maxBombs + 1); b.bombsLeft++; }
+        if (pu === 'fire') b.radius = Math.min(6, b.radius + 1);
+        if (pu === 'speed') b.speed = Math.min(240, b.speed + 24);
+      }
+      // death
+      if (b.prot <= 0 && inFlames(b.x, b.y)) {
+        b.lives--;
+        this.onNet({ die: b.lives });
+        if (b.lives <= 0) E.matchWin(E.me);
+        else { b.dead = true; b.respawnT = 1.3; }
+      }
+      this.onNet({ bp: [Math.round(b.x), Math.round(b.y)] });
+    },
+
     draw() {
       const c = E.ctx;
       c.fillStyle = '#254d2e'; c.fillRect(0, 0, 960, 540);
@@ -2039,6 +2531,30 @@ regGame('quickdraw', (() => {
       if (d.result) this._showResult(d.result.ms, d.result.w);
     },
 
+    // ---- BOT ----
+    botRound(d) {
+      this._b = {
+        ms: [420 + Math.random() * 260, 250 + Math.random() * 90, 122 + Math.random() * 28][d],
+        jump: d === 0 && Math.random() < 0.07, // rookies get twitchy
+        fired: false, jumped: false,
+      };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b) return;
+      this._botInbox.length = 0;
+      if (!E.playing || decided) return;
+      if (phase === 'wait' && b.jump && !b.jumped && elapsed > signalAt * 0.6) {
+        b.jumped = true;
+        this.onNet({ falseStart: 1 });
+      }
+      if (phase === 'go' && !b.fired) {
+        if (performance.now() - t0 >= b.ms) {
+          b.fired = true;
+          this.onNet({ react: Math.round(b.ms) });
+        }
+      }
+    },
+
     draw() {
       const c = E.ctx;
       const isGo = phase === 'go' || phase === 'done';
@@ -2093,6 +2609,427 @@ regGame('quickdraw', (() => {
 
 </script>
 <script>
+// ---- AIR HOCKEY: mouse mallets, your own hits are authoritative on your screen ----
+regGame('hockey', (() => {
+  let E, mallet, malletPrev, malletVel, foeM, puck, goalFlash, lastHitSend;
+  const MR = 24, PR = 13, T = 16;
+  const MOUTH_TOP = 185, MOUTH_BOT = 355; // goal opening
+
+  const myLeft = () => E.me === 0;
+
+  return {
+    name: 'Air Hockey', ico: '🏒',
+    desc: 'Mouse mallets, flying puck. Defend your goal.',
+    controls: 'Move the mouse — your mallet follows (your half only) · shoot the puck into their goal',
+
+    init(e) { E = e; },
+
+    newRound() {
+      const mx = myLeft() ? 140 : 820;
+      mallet = { x: mx, y: 270 };
+      malletPrev = { x: mx, y: 270 };
+      malletVel = { x: 0, y: 0 };
+      foeM = makeInterp();
+      const dir = (E.round % 2 === 0 ? 1 : -1);
+      const ang = (E.rand() - 0.5) * 0.7;
+      puck = { x: 480, y: 270, vx: Math.cos(ang) * 130 * dir, vy: Math.sin(ang) * 130 };
+      goalFlash = 0; lastHitSend = 0;
+      this._lastSent = 0; this._claimed = false;
+    },
+
+    update(dt) {
+      goalFlash = Math.max(0, goalFlash - dt);
+      lastHitSend = Math.max(0, lastHitSend - dt);
+      // mallet follows mouse, clamped to my half
+      const minX = myLeft() ? T + MR : 480 - 8;
+      const maxX = myLeft() ? 480 + 8 : 960 - T - MR;
+      const tx = clamp(E.mouse.x, minX, maxX);
+      const ty = clamp(E.mouse.y, T + MR, 540 - T - MR);
+      malletPrev.x = mallet.x; malletPrev.y = mallet.y;
+      mallet.x = lerp(mallet.x, tx, Math.min(1, dt * 24));
+      mallet.y = lerp(mallet.y, ty, Math.min(1, dt * 24));
+      if (dt > 0) {
+        const nvx = (mallet.x - malletPrev.x) / dt, nvy = (mallet.y - malletPrev.y) / dt;
+        malletVel.x = lerp(malletVel.x, nvx, 0.5);
+        malletVel.y = lerp(malletVel.y, nvy, 0.5);
+      }
+
+      if (E.playing) {
+        // puck physics (simulated on both clients; hits resync)
+        puck.x += puck.vx * dt; puck.y += puck.vy * dt;
+        puck.vx *= Math.max(0, 1 - 0.18 * dt); puck.vy *= Math.max(0, 1 - 0.18 * dt);
+        // top/bottom boards
+        if (puck.y < T + PR && puck.vy < 0) { puck.y = T + PR; puck.vy *= -0.94; SFX.bounce(); }
+        if (puck.y > 540 - T - PR && puck.vy > 0) { puck.y = 540 - T - PR; puck.vy *= -0.94; SFX.bounce(); }
+        // end boards outside the goal mouth
+        const inMouth = puck.y > MOUTH_TOP && puck.y < MOUTH_BOT;
+        if (puck.x < T + PR && puck.vx < 0 && !inMouth) { puck.x = T + PR; puck.vx *= -0.94; SFX.bounce(); }
+        if (puck.x > 960 - T - PR && puck.vx > 0 && !inMouth) { puck.x = 960 - T - PR; puck.vx *= -0.94; SFX.bounce(); }
+        const sp = Math.hypot(puck.vx, puck.vy);
+        if (sp > 1150) { puck.vx *= 1150 / sp; puck.vy *= 1150 / sp; }
+
+        // MY mallet vs puck — local authority, broadcast result
+        const dx = puck.x - mallet.x, dy = puck.y - mallet.y;
+        const d = Math.hypot(dx, dy);
+        if (d < MR + PR && d > 0.001) {
+          const nx = dx / d, ny = dy / d;
+          puck.x = mallet.x + nx * (MR + PR + 0.5);
+          puck.y = mallet.y + ny * (MR + PR + 0.5);
+          const rvx = puck.vx - malletVel.x, rvy = puck.vy - malletVel.y;
+          const vn = rvx * nx + rvy * ny;
+          if (vn < 0) {
+            puck.vx -= 1.85 * vn * nx;
+            puck.vy -= 1.85 * vn * ny;
+            SFX.paddle();
+            if (lastHitSend === 0) {
+              lastHitSend = 0.06;
+              E.gsend({ hp: [Math.round(puck.x), Math.round(puck.y), Math.round(puck.vx), Math.round(puck.vy)] });
+            }
+          }
+        }
+
+        // goal against ME (defender reports — against self-interest, so trustworthy)
+        const myGoalLine = myLeft() ? T - 2 : 960 - T + 2;
+        const past = myLeft() ? puck.x < myGoalLine - PR / 2 : puck.x > myGoalLine + PR / 2;
+        if (past && inMouth && !this._claimed) {
+          this._claimed = true;
+          goalFlash = 0.8;
+          SFX.losePoint();
+          E.gsend({ goal: 1 });
+          E.claimPoint(1 - E.me);
+        }
+      }
+
+      this._lastSent += dt;
+      if (this._lastSent > 1 / 30) {
+        this._lastSent = 0;
+        E.gsend({ pm: [Math.round(mallet.x), Math.round(mallet.y)] });
+      }
+    },
+
+    onNet(d) {
+      if (d.pm) foeM.push({ x: d.pm[0], y: d.pm[1] });
+      if (d.hp) { puck.x = d.hp[0]; puck.y = d.hp[1]; puck.vx = d.hp[2]; puck.vy = d.hp[3]; SFX.paddle(); }
+      if (d.goal) { goalFlash = 0.8; SFX.point(); }
+    },
+
+    // ---- BOT (right side) ----
+    botRound(d) {
+      this._b = { x: 820, y: 270, hitCd: 0, claimed: false };
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b) return;
+      this._botInbox.length = 0; // reads state directly
+      b.hitCd = Math.max(0, b.hitCd - dt);
+      const spd = [430, 680, 1250][d];
+      let tx, ty;
+      if (puck.x > 480 || (puck.vx > 60 && d > 0)) {
+        // attack: get behind the puck (to its right), lined with it
+        tx = puck.x + MR + PR - 8;
+        ty = puck.y + (puck.y > 270 ? -3 : 3);
+      } else {
+        // defend: park in front of goal, tracking the puck
+        tx = 870;
+        ty = clamp(puck.y, MOUTH_TOP + 20, MOUTH_BOT - 20);
+      }
+      tx = clamp(tx, 480 + MR, 960 - T - MR);
+      ty = clamp(ty, T + MR, 540 - T - MR);
+      b.x += clamp(tx - b.x, -spd * dt, spd * dt);
+      b.y += clamp(ty - b.y, -spd * dt, spd * dt);
+      this.onNet({ pm: [Math.round(b.x), Math.round(b.y)] });
+      if (E.playing) {
+        // strike when touching the puck
+        const dx = puck.x - b.x, dy = puck.y - b.y;
+        const dd = Math.hypot(dx, dy);
+        if (dd < MR + PR + 1 && b.hitCd === 0 && puck.x < b.x + 6) {
+          b.hitCd = 0.35;
+          const err = (Math.random() - 0.5) * [230, 120, 26][d];
+          const gx = 20, gy = 270 + err;
+          const gd = Math.hypot(gx - puck.x, gy - puck.y) || 1;
+          const pow = [430, 640, 980][d];
+          this.onNet({ hp: [Math.round(puck.x), Math.round(puck.y), Math.round((gx - puck.x) / gd * pow), Math.round((gy - puck.y) / gd * pow)] });
+        }
+        // goal against the bot (right goal)
+        const inMouth = puck.y > MOUTH_TOP && puck.y < MOUTH_BOT;
+        if (puck.x > 960 - T + 2 + PR / 2 && inMouth && !b.claimed) {
+          b.claimed = true;
+          this.onNet({ goal: 1 });
+          E.claimPoint(E.me);
+        }
+      }
+    },
+
+    draw() {
+      const c = E.ctx;
+      // ice
+      c.fillStyle = '#e8f1f8'; c.fillRect(0, 0, 960, 540);
+      c.fillStyle = '#dbe9f4'; c.fillRect(0, 0, 480, 540);
+      // markings
+      c.strokeStyle = '#c34a4a'; c.lineWidth = 4;
+      c.beginPath(); c.moveTo(480, T); c.lineTo(480, 540 - T); c.stroke();
+      c.beginPath(); c.arc(480, 270, 70, 0, 7); c.stroke();
+      c.fillStyle = '#c34a4a'; c.beginPath(); c.arc(480, 270, 6, 0, 7); c.fill();
+      [[180, 140], [180, 400], [780, 140], [780, 400]].forEach(([x, y]) => {
+        c.beginPath(); c.arc(x, y, 5, 0, 7); c.fill();
+      });
+      // boards
+      c.fillStyle = '#26415c';
+      c.fillRect(0, 0, 960, T); c.fillRect(0, 540 - T, 960, T);
+      c.fillRect(0, 0, T, MOUTH_TOP); c.fillRect(0, MOUTH_BOT, T, 540 - MOUTH_BOT);
+      c.fillRect(960 - T, 0, T, MOUTH_TOP); c.fillRect(960 - T, MOUTH_BOT, T, 540 - MOUTH_BOT);
+      // goal mouths
+      const gl = (x, col) => {
+        c.fillStyle = col; c.globalAlpha = 0.25;
+        c.fillRect(x, MOUTH_TOP, 26, MOUTH_BOT - MOUTH_TOP); c.globalAlpha = 1;
+        c.fillStyle = '#111'; c.fillRect(x + (x === 0 ? 0 : 22), MOUTH_TOP, 4, MOUTH_BOT - MOUTH_TOP);
+      };
+      gl(0, E.colors[0]); gl(960 - 26, E.colors[1]);
+      if (goalFlash > 0) {
+        c.fillStyle = `rgba(255,209,102,${goalFlash * 0.5})`; c.fillRect(0, 0, 960, 540);
+      }
+      // foe mallet
+      const fm = foeM.get(['x', 'y']);
+      const drawMallet = (x, y, col) => {
+        c.fillStyle = 'rgba(0,0,0,0.2)'; c.beginPath(); c.ellipse(x, y + 4, MR, MR * 0.9, 0, 0, 7); c.fill();
+        c.fillStyle = col; c.beginPath(); c.arc(x, y, MR, 0, 7); c.fill();
+        c.strokeStyle = 'rgba(0,0,0,0.35)'; c.lineWidth = 3; c.stroke();
+        c.fillStyle = 'rgba(255,255,255,0.65)'; c.beginPath(); c.arc(x, y, MR * 0.45, 0, 7); c.fill();
+        c.fillStyle = col; c.beginPath(); c.arc(x, y, MR * 0.28, 0, 7); c.fill();
+      };
+      if (fm) drawMallet(fm.x, fm.y, E.colors[1 - E.me]);
+      drawMallet(mallet.x, mallet.y, E.colors[E.me]);
+      // puck
+      c.fillStyle = 'rgba(0,0,0,0.25)'; c.beginPath(); c.ellipse(puck.x, puck.y + 3, PR, PR * 0.85, 0, 0, 7); c.fill();
+      c.fillStyle = '#14181f'; c.beginPath(); c.arc(puck.x, puck.y, PR, 0, 7); c.fill();
+      c.strokeStyle = '#3a4656'; c.lineWidth = 2; c.stroke();
+      c.fillStyle = 'rgba(255,255,255,0.12)'; c.beginPath(); c.arc(puck.x, puck.y - 3, PR * 0.6, 0, 7); c.fill();
+    },
+  };
+})());
+
+</script>
+<script>
+// ---- LIGHT CYCLES: leave a wall, don't hit one ----
+regGame('tron', (() => {
+  let E, me, myTrail, foeTrail, foeHead, dead, foeDead, speed, parts;
+  const T = 16, BR = 4; // border, bike radius
+  const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]]; // E S W N
+
+  function segHit(px, py, x1, y1, x2, y2, pad) {
+    // axis-aligned segment vs point
+    const minx = Math.min(x1, x2) - pad, maxx = Math.max(x1, x2) + pad;
+    const miny = Math.min(y1, y2) - pad, maxy = Math.max(y1, y2) + pad;
+    return px > minx && px < maxx && py > miny && py < maxy;
+  }
+
+  function trailHit(px, py, trail, skipTail) {
+    // trail = [corner points ..., head]; check every segment
+    for (let i = 0; i < trail.length - 1; i++) {
+      if (skipTail && i >= trail.length - 1 - skipTail) continue;
+      if (segHit(px, py, trail[i][0], trail[i][1], trail[i + 1][0], trail[i + 1][1], 4)) return true;
+    }
+    return false;
+  }
+
+  return {
+    name: 'Light Cycles', ico: '🏍️',
+    desc: 'Tron rules: your trail is a wall. Outlast them.',
+    controls: 'WASD to steer (90° turns) · trails are deadly · speed keeps rising',
+
+    init(e) { E = e; },
+
+    newRound() {
+      me = E.me === 0
+        ? { x: 140, y: 270, dir: 0 }
+        : { x: 820, y: 270, dir: 2 };
+      myTrail = [[me.x, me.y]];
+      foeTrail = [E.me === 0 ? [820, 270] : [140, 270]];
+      foeHead = foeTrail[0].slice();
+      dead = false; foeDead = false;
+      speed = 170;
+      parts = [];
+      this._lastSent = 0;
+    },
+
+    _turn(nd) {
+      if (dead || !E.playing) return;
+      if (nd === me.dir || nd === (me.dir + 2) % 4) return; // no reverse
+      me.dir = nd;
+      myTrail.push([Math.round(me.x), Math.round(me.y)]);
+      SFX.tick();
+      E.gsend({ tr: [Math.round(me.x), Math.round(me.y)] });
+    },
+
+    onKey(k) {
+      if (k === 'd') this._turn(0);
+      if (k === 's') this._turn(1);
+      if (k === 'a') this._turn(2);
+      if (k === 'w') this._turn(3);
+    },
+
+    update(dt) {
+      if (E.playing && !dead) {
+        speed = Math.min(300, speed + 7 * dt);
+        const [dx, dy] = DIRS[me.dir];
+        me.x += dx * speed * dt;
+        me.y += dy * speed * dt;
+
+        // collisions: borders, my own trail (minus fresh tail), foe trail
+        let hit = me.x < T + BR || me.x > 960 - T - BR || me.y < T + BR || me.y > 540 - T - BR;
+        if (!hit) {
+          const myFull = [...myTrail, [me.x, me.y]];
+          // skip my newest ~segment near the head
+          for (let i = 0; i < myFull.length - 3; i++) {
+            const [x1, y1] = myFull[i], [x2, y2] = myFull[i + 1];
+            // shorten the segment adjacent to head slightly
+            if (segHit(me.x, me.y, x1, y1, x2, y2, 3.4)) { hit = true; break; }
+          }
+          if (!hit) {
+            const foeFull = [...foeTrail, foeHead];
+            if (trailHit(me.x, me.y, foeFull, 0)) hit = true;
+          }
+        }
+        if (hit) {
+          dead = true;
+          SFX.boom();
+          for (let i = 0; i < 24; i++) parts.push({ x: me.x, y: me.y, vx: (Math.random() - 0.5) * 320, vy: (Math.random() - 0.5) * 320, life: 0.6, c: E.colors[E.me] });
+          E.gsend({ die: [Math.round(me.x), Math.round(me.y)] });
+          E.claimPoint(1 - E.me);
+        }
+      }
+      parts.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; });
+      parts = parts.filter((p) => p.life > 0);
+
+      this._lastSent += dt;
+      if (this._lastSent > 1 / 30 && !dead) {
+        this._lastSent = 0;
+        E.gsend({ th: [Math.round(me.x), Math.round(me.y)] });
+      }
+    },
+
+    onNet(d) {
+      if (d.th) foeHead = [d.th[0], d.th[1]];
+      if (d.tr) { foeTrail.push([d.tr[0], d.tr[1]]); SFX.tick(); }
+      if (d.die) {
+        foeDead = true;
+        foeHead = [d.die[0], d.die[1]];
+        SFX.boom();
+        for (let i = 0; i < 24; i++) parts.push({ x: d.die[0], y: d.die[1], vx: (Math.random() - 0.5) * 320, vy: (Math.random() - 0.5) * 320, life: 0.6, c: E.colors[1 - E.me] });
+      }
+    },
+
+    // ---- BOT ----
+    botRound(d) {
+      this._b = { x: 820, y: 270, dir: 2, dead: false, turnCd: 0 };
+    },
+    _botFree(b, dir, maxL) {
+      // how far can the bot travel in `dir` before dying?
+      const [dx, dy] = DIRS[dir];
+      const myFull = [...myTrail, [me.x, me.y]];
+      const botFull = [...foeTrail, [b.x, b.y]];
+      for (let l = 6; l <= maxL; l += 6) {
+        const px = b.x + dx * l, py = b.y + dy * l;
+        if (px < T + BR || px > 960 - T - BR || py < T + BR || py > 540 - T - BR) return l;
+        if (trailHit(px, py, myFull, 0)) return l;
+        // skip the bot's own newest segments
+        for (let i = 0; i < botFull.length - 3; i++) {
+          if (segHit(px, py, botFull[i][0], botFull[i][1], botFull[i + 1][0], botFull[i + 1][1], 4)) return l;
+        }
+      }
+      return maxL + 6;
+    },
+    botUpdate(dt, d) {
+      const b = this._b; if (!b || b.dead) { this._botInbox.length = 0; return; }
+      this._botInbox.length = 0;
+      if (E.playing) {
+        b.turnCd -= dt;
+        const look = [50, 100, 170][d];
+        const ahead = this._botFree(b, b.dir, look);
+        if (ahead <= look && b.turnCd <= 0) {
+          const left = (b.dir + 3) % 4, right = (b.dir + 1) % 4;
+          let lFree = this._botFree(b, left, look * 1.4);
+          let rFree = this._botFree(b, right, look * 1.4);
+          // god bias: prefer the side that heads toward open space near the player's front
+          if (d === 2) {
+            const target = [me.x + DIRS[me.dir][0] * 140, me.y + DIRS[me.dir][1] * 140];
+            const dl = Math.hypot(b.x + DIRS[left][0] * 80 - target[0], b.y + DIRS[left][1] * 80 - target[1]);
+            const dr = Math.hypot(b.x + DIRS[right][0] * 80 - target[0], b.y + DIRS[right][1] * 80 - target[1]);
+            if (Math.abs(lFree - rFree) < 30) { if (dl < dr) lFree += 20; else rFree += 20; }
+          }
+          const nd = lFree >= rFree ? left : right;
+          if (Math.max(lFree, rFree) > 14) {
+            b.dir = nd;
+            foeTrail.push([Math.round(b.x), Math.round(b.y)]);
+            this.onNet({ tr: undefined }); // corner already recorded
+            SFX.tick();
+            b.turnCd = 0.12;
+          }
+        }
+        const [dx, dy] = DIRS[b.dir];
+        b.x += dx * speed * dt;
+        b.y += dy * speed * dt;
+        // bot death check
+        let hitB = b.x < T + BR || b.x > 960 - T - BR || b.y < T + BR || b.y > 540 - T - BR;
+        if (!hitB) {
+          const myFull = [...myTrail, [me.x, me.y]];
+          if (trailHit(b.x, b.y, myFull, 0)) hitB = true;
+          if (!hitB) {
+            const botFull = [...foeTrail, [b.x, b.y]];
+            for (let i = 0; i < botFull.length - 3; i++) {
+              if (segHit(b.x, b.y, botFull[i][0], botFull[i][1], botFull[i + 1][0], botFull[i + 1][1], 3.4)) { hitB = true; break; }
+            }
+          }
+        }
+        if (hitB) {
+          b.dead = true;
+          this.onNet({ die: [Math.round(b.x), Math.round(b.y)] });
+          E.claimPoint(E.me);
+          return;
+        }
+      }
+      this.onNet({ th: [Math.round(b.x), Math.round(b.y)] });
+    },
+
+    draw() {
+      const c = E.ctx;
+      c.fillStyle = '#06090f'; c.fillRect(0, 0, 960, 540);
+      c.strokeStyle = 'rgba(77,195,255,0.06)'; c.lineWidth = 1;
+      for (let x = 0; x < 960; x += 40) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, 540); c.stroke(); }
+      for (let y = 0; y < 540; y += 40) { c.beginPath(); c.moveTo(0, y); c.lineTo(960, y); c.stroke(); }
+      // border
+      c.strokeStyle = '#1f6feb'; c.lineWidth = 4;
+      c.strokeRect(T, T, 960 - T * 2, 540 - T * 2);
+      const drawTrail = (pts, head, col, isDead) => {
+        if (pts.length === 0) return;
+        for (const pass of [[7, 0.25], [2.5, 1]]) {
+          c.strokeStyle = col; c.globalAlpha = pass[1]; c.lineWidth = pass[0];
+          c.lineJoin = 'miter';
+          c.beginPath();
+          c.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
+          c.lineTo(head[0], head[1]);
+          c.stroke();
+        }
+        c.globalAlpha = 1;
+        if (!isDead) {
+          c.fillStyle = '#fff'; c.beginPath(); c.arc(head[0], head[1], BR + 1.5, 0, 7); c.fill();
+          c.fillStyle = col; c.beginPath(); c.arc(head[0], head[1], BR - 0.5, 0, 7); c.fill();
+        }
+      };
+      drawTrail(foeTrail, foeHead, E.colors[1 - E.me], foeDead);
+      drawTrail(myTrail, [me.x, me.y], E.colors[E.me], dead);
+      for (const p of parts) {
+        c.fillStyle = p.c; c.globalAlpha = Math.min(1, p.life * 2);
+        c.fillRect(p.x - 2, p.y - 2, 4, 4); c.globalAlpha = 1;
+      }
+      c.fillStyle = 'rgba(255,255,255,0.35)'; c.font = 'bold 13px system-ui'; c.textAlign = 'center';
+      c.fillText(Math.round(speed) + ' px/s', 480, 36); c.textAlign = 'left';
+    },
+  };
+})());
+
+</script>
+<script>
 // ---- DUEL ROOM engine: screens, lobby, rounds, scoring ----
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -2105,6 +3042,10 @@ regGame('quickdraw', (() => {
   let botsN = 0;                // Bomb Arena bots (synced between players)
   let holesN = 9;               // Minigolf hole count (synced between players)
   let hudOverride = null;       // games can take over the HUD line
+  let botMode = false;          // playing against the AI (solo lobby or Play vs Bot)
+  let botDiff = 1;              // 0 Rookie · 1 Pro · 2 GOD MODE
+  let roomOpen = false;         // hosting & waiting for a friend while in solo lobby
+  const BOT_NAMES = ['Bot Rookie', 'Bot Pro', '👁 GOD BOT'];
   let score = [0, 0], round = 0, wins = {}; // wins[gameId] = [w0,w1]
   let roundTimers = [];
   let myCode = '';
@@ -2121,7 +3062,10 @@ regGame('quickdraw', (() => {
     get playing() { return E.state === 'play'; },
     rand: Math.random,
     round: 0,
-    gsend(d) { Net.send({ t: 'g', d }); },
+    gsend(d) {
+      Net.send({ t: 'g', d });
+      if (botMode && game && game._botInbox) game._botInbox.push(d); // bots "hear" my messages
+    },
     claimPoint(w) {
       if (E.state !== 'play') return;
       if (Net.isHost) applyPoint(w);
@@ -2168,7 +3112,18 @@ regGame('quickdraw', (() => {
     const url = new URL(location.href);
     url.searchParams.set('room', myCode);
     $('linkShow').value = url.toString();
-    show('wait');
+    // straight into the lobby: warm up against the bot while you wait
+    botMode = true; roomOpen = true;
+    wins = {};
+    enterLobby();
+  };
+  $('btnBot').onclick = () => {
+    SFX.unlock(); SFX.click();
+    $('menuErr').textContent = '';
+    Net.local(myName('Player 1'));
+    botMode = true; roomOpen = false;
+    wins = {};
+    enterLobby();
   };
   $('btnJoin').onclick = () => {
     SFX.unlock(); SFX.click();
@@ -2194,12 +3149,19 @@ regGame('quickdraw', (() => {
 
   // ---------- net events ----------
   Net.onReady(() => {
+    // a real human connected — end any bot business and go PvP
+    const wasBot = botMode;
+    botMode = false; roomOpen = false;
+    clearTimers();
+    game = null; curGameId = null;
+    banner(''); sub(''); hudOverride = null;
     E.me = Net.isHost ? 0 : 1;
     E.isHost = Net.isHost;
     E.names[E.me] = Net.myName;
     E.names[1 - E.me] = Net.peerName;
     $('menuErr').textContent = '';
-    toast('Connected!');
+    if (wins && Object.keys(wins).length && wasBot) wins = {}; // bot scores don't count in the rivalry
+    toast(Net.isHost ? '⚔️ Your rival is here!' : 'Connected!', 3200);
     SFX.win();
     enterLobby();
   });
@@ -2232,13 +3194,45 @@ regGame('quickdraw', (() => {
 
   // ---------- lobby ----------
   function enterLobby() {
-    E.names[E.me] = Net.myName; E.names[1 - E.me] = Net.peerName;
+    if (botMode) {
+      E.me = 0; E.isHost = true;
+      E.names[0] = Net.myName || 'You';
+      E.names[1] = BOT_NAMES[botDiff];
+    } else {
+      E.names[E.me] = Net.myName; E.names[1 - E.me] = Net.peerName;
+    }
     $('lp1').textContent = E.names[0] + (E.me === 0 ? ' (you)' : '');
     $('lp2').textContent = E.names[1] + (E.me === 1 ? ' (you)' : '');
+    $('lobbyWait').style.display = botMode && roomOpen ? '' : 'none';
+    $('botBar').style.display = botMode ? 'flex' : 'none';
+    if (roomOpen) $('lobbyCode').textContent = myCode;
+    syncDiffChips();
     buildCards();
     buildScore();
     show('lobby');
   }
+  function syncDiffChips() {
+    document.querySelectorAll('.diffchip').forEach((ch) => {
+      ch.classList.toggle('onn', parseInt(ch.dataset.d, 10) === botDiff);
+    });
+  }
+  document.querySelectorAll('.diffchip').forEach((ch) => {
+    ch.onclick = () => {
+      botDiff = parseInt(ch.dataset.d, 10);
+      SFX.click();
+      if (botMode) enterLobby();
+    };
+  });
+  $('btnLeaveLobby').onclick = () => {
+    SFX.click();
+    botMode = false; roomOpen = false;
+    Net.leave();
+    show('menu');
+  };
+  $('btnCopy2').onclick = () => {
+    const v = $('linkShow').value;
+    if (navigator.clipboard) navigator.clipboard.writeText(v).then(() => toast('Invite link copied!'));
+  };
   function buildCards() {
     const g = $('games'); g.innerHTML = '';
     for (const id of GAME_ORDER) {
@@ -2324,13 +3318,16 @@ regGame('quickdraw', (() => {
   function beginGame(id, seed, opts) {
     clearTimers();
     E.opts = opts || {};
+    E.bot = botMode; E.botDiff = botDiff;
     hudOverride = null;
     curGameId = id;
     game = GAMES[id];
     score = [0, 0]; round = 0;
     show('game');
     $('ctrlhint').textContent = game.controls;
+    game._botInbox = [];
     game.init(E);
+    if (botMode && game.botInit) game.botInit(botDiff);
     startRound(seed, 1);
   }
   function startRound(seed, n) {
@@ -2339,6 +3336,7 @@ regGame('quickdraw', (() => {
     E.rand = makeRand(seed);
     E.state = 'countdown';
     game.newRound();
+    if (botMode && game.botRound) game.botRound(botDiff);
     updateHUD();
     banner(''); sub('');
     let c = 3;
@@ -2473,6 +3471,7 @@ regGame('quickdraw', (() => {
     if (appState === 'game' && game) {
       // 'claimed' behaves like frozen play while host confirms
       game.update(dt);
+      if (botMode && game.botUpdate) game.botUpdate(dt, botDiff);
       game.draw();
     }
     requestAnimationFrame(loop);
