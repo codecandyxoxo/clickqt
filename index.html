@@ -1313,15 +1313,20 @@ regGame('tanks', (() => {
 </script>
 <script>
 // ---- SUMO: shove your rival off a shrinking ice platform ----
+// Physics model: each client owns its body. The opponent is DEAD-RECKONED
+// (latest packet + velocity extrapolation) so collisions land where they look.
+// Collisions = impulse (restitution) + sustained shove force, with a momentum
+// advantage while dashing. Both clients run the mirrored computation.
 regGame('sumo', (() => {
-  let E, me, foe, foeI, radius, elapsed, fell, foeFell, dashCd, parts;
-  const R = 17, ACC = 720, MAXV = 340, FRICTION = 1.15; // low friction = ice
+  let E, me, foe, foeR, radius, elapsed, fell, foeFell, dashCd, dashT, parts, hitGate;
+  const R = 17, ACC = 850, FRICTION = 1.5;
   const CX = 480, CY = 270, R0 = 205, RMIN = 88;
+  const PUNCH = 1.18, SHOVE = 3.4, DASH_V = 430, DASH_T = 0.28, DASH_CD = 1.2;
 
   return {
     name: 'Sumo', ico: '🥋',
     desc: 'Shrinking ice ring. Shove them off. Don\'t slip.',
-    controls: 'WASD to skate · SPACE to dash · push your rival off the ice',
+    controls: 'WASD to skate · SPACE to dash (heavy hits!) · push your rival off the ice',
 
     init(e) { E = e; },
 
@@ -1329,19 +1334,41 @@ regGame('sumo', (() => {
       me = E.me === 0
         ? { x: CX - 120, y: CY, vx: 0, vy: 0 }
         : { x: CX + 120, y: CY, vx: 0, vy: 0 };
-      foe = makeInterp(); foeI = null;
+      foe = makeInterp();
+      foeR = null;               // dead-reckoned render/collision position
       radius = R0; elapsed = 0;
       fell = false; foeFell = false;
-      dashCd = 0; parts = [];
+      dashCd = 0; dashT = 0; hitGate = 0;
+      parts = [];
       this._lastSent = 0;
+    },
+
+    dbg() { // test hook (?dev)
+      return {
+        x: me.x, y: me.y, vx: me.vx, vy: me.vy,
+        fx: foeR ? foeR.x : null, fy: foeR ? foeR.y : null,
+        d: foeR ? Math.hypot(me.x - foeR.x, me.y - foeR.y) : null,
+        fell, foeFell, radius,
+      };
     },
 
     update(dt) {
       if (E.playing) {
         elapsed += dt;
-        // ring shrinks after a 5s grace period
         if (elapsed > 5) radius = Math.max(RMIN, R0 - (elapsed - 5) * 9);
       }
+      hitGate = Math.max(0, hitGate - dt);
+      dashCd = Math.max(0, dashCd - dt);
+      dashT = Math.max(0, dashT - dt);
+
+      // ---- dead-reckon the opponent from their latest packet ----
+      const pk = foe.latest();
+      if (pk && !foeFell) {
+        const age = clamp((performance.now() - pk._t) / 1000, 0, 0.22);
+        foeR = { x: pk.x + pk.vx * age, y: pk.y + pk.vy * age, vx: pk.vx, vy: pk.vy, dash: pk.dash && age < 0.3 };
+      } else if (foeFell) foeR = foeR; // keep last spot for the splash
+      else foeR = null;
+
       if (E.playing && !fell) {
         let ax = 0, ay = 0;
         if (E.keys.has('w')) ay -= 1; if (E.keys.has('s')) ay += 1;
@@ -1350,48 +1377,61 @@ regGame('sumo', (() => {
           const l = Math.hypot(ax, ay);
           me.vx += (ax / l) * ACC * dt; me.vy += (ay / l) * ACC * dt;
         }
-        dashCd = Math.max(0, dashCd - dt);
         if (E.keys.has(' ') && dashCd === 0 && (ax || ay)) {
           const l = Math.hypot(ax, ay) || 1;
-          me.vx += (ax / l) * 380; me.vy += (ay / l) * 380;
-          dashCd = 1.5;
+          me.vx += (ax / l) * DASH_V; me.vy += (ay / l) * DASH_V;
+          dashCd = DASH_CD; dashT = DASH_T;
           SFX.go();
-          for (let i = 0; i < 8; i++) parts.push({ x: me.x, y: me.y, vx: -(ax) * 60 + (Math.random() - 0.5) * 80, vy: -(ay) * 60 + (Math.random() - 0.5) * 80, life: 0.4, c: '#bfe9ff' });
+          for (let i = 0; i < 8; i++) parts.push({ x: me.x, y: me.y, vx: -(ax / l) * 80 + (Math.random() - 0.5) * 90, vy: -(ay / l) * 80 + (Math.random() - 0.5) * 90, life: 0.4, c: '#bfe9ff' });
         }
-        // ice friction (light)
+        // ice friction (grippy enough to hold your ground)
         me.vx *= Math.max(0, 1 - FRICTION * dt);
         me.vy *= Math.max(0, 1 - FRICTION * dt);
         const sp = Math.hypot(me.vx, me.vy);
-        if (sp > MAXV + 400) { me.vx *= (MAXV + 400) / sp; me.vy *= (MAXV + 400) / sp; }
+        if (sp > 800) { me.vx *= 800 / sp; me.vy *= 800 / sp; }
         me.x += me.vx * dt; me.y += me.vy * dt;
 
-        // shove: real momentum exchange. Both clients run the same elastic collision
-        // (my body + opponent's streamed pos/vel) and each applies the result to
-        // their OWN body — ram someone and they actually go flying.
-        if (foeI && !foeFell) {
-          const fv = foe.latest() || { vx: 0, vy: 0 };
-          const dx = me.x - foeI.x, dy = me.y - foeI.y;
+        // ---- collision vs dead-reckoned opponent (mirrored on both clients) ----
+        if (foeR && !foeFell) {
+          const dx = me.x - foeR.x, dy = me.y - foeR.y;
           const d = Math.hypot(dx, dy);
           if (d < R * 2 && d > 0.001) {
             const nx = dx / d, ny = dy / d;
-            // separate my body out of the overlap
+            // hard separation of my body (dead reckoning keeps both views close)
             const overlap = R * 2 - d;
-            me.x += nx * overlap * 0.55;
-            me.y += ny * overlap * 0.55;
-            // elastic impulse (equal masses, restitution 0.85)
-            const rvx = me.vx - (fv.vx || 0), rvy = me.vy - (fv.vy || 0);
+            me.x += nx * overlap * 0.8;
+            me.y += ny * overlap * 0.8;
+            // impulse with restitution — applied while approaching
+            const rvx = me.vx - foeR.vx, rvy = me.vy - foeR.vy;
             const vn = rvx * nx + rvy * ny;
             if (vn < 0) {
-              const j = -(1 + 0.85) * vn * 0.5;
+              // Bodies are meat, not rubber: base collisions are near-inelastic
+              // (thud, stay engaged, grind). The DASH carries the bounce — a
+              // dash hit on a non-dasher launches them.
+              let share = 0.5, rest = 0.15;
+              const meDash = dashT > 0, foeDash = !!foeR.dash;
+              if (meDash && !foeDash) { share = 0.22; rest = 0.7; }
+              else if (!meDash && foeDash) { share = 0.88; rest = 0.7; }
+              else if (meDash && foeDash) { rest = 0.55; }
+              const j = -(1 + rest) * vn * share * PUNCH;
               me.vx += nx * j; me.vy += ny * j;
-              if (!this._touch) {
+              if (hitGate === 0) {
+                hitGate = 0.18;
                 SFX.paddle();
-                if (Math.abs(vn) > 220) SFX.hit();
-                for (let i = 0; i < 6; i++) parts.push({ x: (me.x + foeI.x) / 2, y: (me.y + foeI.y) / 2, vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200, life: 0.35, c: '#fff' });
-                this._touch = true;
+                if (-vn > 260) { SFX.hit(); }
+                const px = (me.x + foeR.x) / 2, py = (me.y + foeR.y) / 2;
+                const nP = clamp(Math.round(-vn / 40), 4, 14);
+                for (let i = 0; i < nP; i++) parts.push({ x: px, y: py, vx: (Math.random() - 0.5) * (100 + -vn * 0.5), vy: (Math.random() - 0.5) * (100 + -vn * 0.5), life: 0.35, c: '#fff' });
               }
             }
-          } else this._touch = false;
+            // sustained shove: their pressing speed bleeds into me every frame,
+            // so a driving opponent bulldozes a passive one
+            const press = foeR.vx * nx + foeR.vy * ny; // their speed along foe->me
+            if (press > 0) {
+              me.vx += nx * press * SHOVE * dt;
+              me.vy += ny * press * SHOVE * dt;
+            }
+          }
         }
 
         // fell off?
@@ -1407,61 +1447,59 @@ regGame('sumo', (() => {
       parts = parts.filter((p) => p.life > 0);
 
       this._lastSent += dt;
-      if (this._lastSent > 1 / 30 && !fell) {
+      if (this._lastSent > 1 / 45 && !fell) {   // 45 Hz — collisions want fresh data
         this._lastSent = 0;
-        E.gsend({ su: [Math.round(me.x), Math.round(me.y), Math.round(me.vx), Math.round(me.vy)] });
+        E.gsend({ su: [Math.round(me.x), Math.round(me.y), Math.round(me.vx), Math.round(me.vy), dashT > 0 ? 1 : 0] });
       }
-      foeI = foe.get(['x', 'y']);
     },
 
     onNet(d) {
-      if (d.su) foe.push({ x: d.su[0], y: d.su[1], vx: d.su[2] || 0, vy: d.su[3] || 0 });
-      if (d.fell) { foeFell = true; SFX.boom(); }
+      if (d.su) foe.push({ x: d.su[0], y: d.su[1], vx: d.su[2] || 0, vy: d.su[3] || 0, dash: !!d.su[4] });
+      if (d.fell) { foeFell = true; if (foeR) { foeR.x = d.fell[0]; foeR.y = d.fell[1]; } SFX.boom(); }
     },
 
     draw() {
       const c = E.ctx;
-      // dark water
       c.fillStyle = '#0b1b2b'; c.fillRect(0, 0, 960, 540);
       c.fillStyle = 'rgba(77,195,255,0.05)';
       for (let i = 0; i < 6; i++) c.fillRect(0, 90 * i + (Math.sin(performance.now() / 900 + i) * 6), 960, 3);
-      // platform
       const grd = c.createRadialGradient(CX, CY, radius * 0.2, CX, CY, radius);
       grd.addColorStop(0, '#dfeefb'); grd.addColorStop(1, '#a8c9e6');
       c.fillStyle = grd;
       c.beginPath(); c.arc(CX, CY, radius, 0, 7); c.fill();
       c.strokeStyle = radius <= RMIN + 1 ? '#e63946' : '#6fa3cc';
       c.lineWidth = 5; c.stroke();
-      // shrink warning ring
       if (elapsed > 5 && radius > RMIN + 1) {
         c.strokeStyle = 'rgba(230,57,70,0.4)'; c.setLineDash([8, 10]); c.lineWidth = 2;
         c.beginPath(); c.arc(CX, CY, RMIN, 0, 7); c.stroke(); c.setLineDash([]);
       }
-      // center emblem
       c.strokeStyle = 'rgba(50,90,130,0.35)'; c.lineWidth = 3;
       c.beginPath(); c.arc(CX, CY, 34, 0, 7); c.stroke();
-      const drawP = (p, col, down) => {
+      const drawP = (p, col, down, dashing) => {
         if (down) return;
         c.fillStyle = 'rgba(0,0,0,0.25)';
         c.beginPath(); c.ellipse(p.x, p.y + R * 0.72, R * 0.95, R * 0.4, 0, 0, 7); c.fill();
+        if (dashing) { // dash trail glow
+          c.fillStyle = col; c.globalAlpha = 0.3;
+          c.beginPath(); c.arc(p.x - (p.vx || 0) * 0.03, p.y - (p.vy || 0) * 0.03, R * 1.1, 0, 7); c.fill();
+          c.globalAlpha = 1;
+        }
         c.fillStyle = col;
         c.beginPath(); c.arc(p.x, p.y, R, 0, 7); c.fill();
         c.strokeStyle = '#0a0e14'; c.lineWidth = 2.5; c.stroke();
-        // headband
         c.strokeStyle = '#fff'; c.lineWidth = 4;
         c.beginPath(); c.arc(p.x, p.y, R - 4, -2.5, -0.6); c.stroke();
       };
-      if (foeI) drawP(foeI, E.colors[1 - E.me], foeFell);
-      drawP(me, E.colors[E.me], fell);
+      if (foeR) drawP(foeR, E.colors[1 - E.me], foeFell, foeR.dash);
+      drawP(me, E.colors[E.me], fell, dashT > 0);
       for (const p of parts) {
-        c.fillStyle = p.c; c.globalAlpha = p.life * 2.2;
+        c.fillStyle = p.c; c.globalAlpha = Math.min(1, p.life * 2.2);
         c.fillRect(p.x - 2, p.y - 2, 4, 4); c.globalAlpha = 1;
       }
-      // dash meter
       if (!fell) {
         c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(me.x - 16, me.y - 30, 32, 5);
         c.fillStyle = dashCd === 0 ? '#3ddc84' : '#ffd166';
-        c.fillRect(me.x - 16, me.y - 30, 32 * (1 - dashCd / 1.5), 5);
+        c.fillRect(me.x - 16, me.y - 30, 32 * (1 - dashCd / DASH_CD), 5);
       }
       if (E.playing && elapsed < 5) {
         c.fillStyle = 'rgba(255,255,255,0.55)'; c.font = 'bold 15px system-ui'; c.textAlign = 'center';
@@ -2455,6 +2493,7 @@ regGame('quickdraw', (() => {
       get connected() { return Net.connected; },
       testPoint(w) { E.claimPoint(w); },
       testMatchWin(w) { E.matchWin(w); },
+      get g() { return game && game.dbg ? game.dbg() : null; },
     };
   }
 
