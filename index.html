@@ -81,7 +81,7 @@
   <!-- MENU -->
   <div class="screen on" id="scr-menu">
     <h1 class="logo">DUEL ROOM</h1>
-    <div class="sub">5 GAMES &middot; 1 RIVALRY &middot; FIRST TO 5</div>
+    <div class="sub">7 GAMES &middot; 1 RIVALRY &middot; FIRST TO 5</div>
     <div class="card">
       <div class="row" style="margin-bottom:18px">
         <label style="color:var(--dim)">Your name</label>
@@ -615,61 +615,140 @@ regGame('sniper', (() => {
 
 </script>
 <script>
-// ---- MINIGOLF RACE: same hole, first to sink wins the point ----
+// ---- MINIGOLF: real stroke play. 30 hand-built holes, turn-based, scorecard,
+// water hazards, 8-stroke pickup, lowest total wins (sudden death on ties). ----
 regGame('golf', (() => {
-  let E, course, ball, foe, foeI, strokes, foeStrokes, aiming, aimVec, sunk, foeSunk, parts;
-  const R = 8, T = 16;
+  let E, nHoles, order, holeIdx, map, ball, foeBall, foe, turn, phase, strokes, holed, totals;
+  let aiming, aimVec, preShot, parts, interT, stopT, suddenDeath, matchDone;
+  const R = 8, T = 16, MAX_STROKES = 8;
 
-  const COURSES = [
-    { // 1: center block
-      walls: [[440, 170, 70, 200]], sand: [],
-      start: [120, 270], hole: [840, 270],
-    },
-    { // 2: slalom
-      walls: [[230, 16, 30, 350], [530, 174, 30, 350]], sand: [],
-      start: [120, 440], hole: [840, 100],
-    },
-    { // 3: sand diagonal
-      walls: [], sand: [[360, 150, 240, 240]],
-      start: [120, 110], hole: [840, 430],
-    },
-    { // 4: bank shot chamber
-      walls: [[690, 150, 26, 390]], sand: [],
-      start: [120, 270], hole: [840, 300],
-    },
-    { // 5: sand island
-      walls: [[300, 100, 26, 120], [300, 320, 26, 120]], sand: [[380, 140, 260, 260]],
-      start: [120, 270], hole: [500, 270],
-    },
+  // 30 holes: w=walls, s=sand, wa=water, st=start, h=hole
+  const MAPS = [
+    { n: 'First Putt', w: [], s: [], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'Center Block', w: [[440, 170, 80, 200]], s: [], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'Slalom', w: [[250, 16, 28, 340], [560, 184, 28, 340]], s: [], wa: [], st: [110, 440], h: [850, 100] },
+    { n: 'Sand Pit', w: [], s: [[360, 140, 240, 260]], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'Bank Shot', w: [[700, 140, 26, 400]], s: [], wa: [], st: [110, 270], h: [850, 320] },
+    { n: 'The Island', w: [], s: [[350, 110, 320, 320]], wa: [], st: [110, 270], h: [510, 270] },
+    { n: 'Water Carry', w: [], s: [], wa: [[440, 16, 80, 200], [440, 340, 80, 184]], st: [110, 270], h: [850, 270] },
+    { n: 'Narrow Bridge', w: [], s: [], wa: [[380, 16, 200, 230], [380, 310, 200, 214]], st: [110, 270], h: [850, 270] },
+    { n: 'U-Turn', w: [[460, 16, 36, 400]], s: [], wa: [], st: [110, 100], h: [850, 100] },
+    { n: 'S-Curve', w: [[300, 16, 30, 370], [630, 154, 30, 370]], s: [], wa: [], st: [110, 440], h: [850, 440] },
+    { n: 'Pinball', w: [[300, 120, 30, 30], [300, 390, 30, 30], [480, 255, 30, 30], [640, 120, 30, 30], [640, 390, 30, 30], [480, 80, 30, 30], [480, 430, 30, 30]], s: [], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'The Funnel', w: [[250, 16, 300, 90], [250, 434, 300, 90], [550, 16, 120, 160], [550, 364, 120, 160]], s: [], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'The Vault', w: [[740, 180, 24, 180], [740, 180, 170, 24], [740, 336, 170, 24]], s: [], wa: [], st: [110, 270], h: [830, 270] },
+    { n: 'Twin Traps', w: [], s: [[330, 120, 140, 120], [490, 300, 140, 120]], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'Long Shot', w: [], s: [[16, 16, 180, 120], [760, 404, 168, 120]], wa: [], st: [100, 480], h: [860, 70] },
+    { n: 'Corner Pocket', w: [[700, 150, 26, 180]], s: [], wa: [], st: [110, 440], h: [870, 80] },
+    { n: 'The Gate', w: [[470, 16, 26, 210], [470, 314, 26, 210]], s: [], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'Double Gate', w: [[330, 16, 26, 300], [620, 224, 26, 300]], s: [], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'The Moat', w: [], s: [], wa: [[700, 160, 180, 36], [700, 344, 180, 36], [700, 196, 36, 148]], st: [110, 270], h: [790, 270] },
+    { n: 'Zigzag Alley', w: [[180, 130, 600, 26], [180, 380, 600, 26]], s: [], wa: [], st: [110, 60], h: [850, 480] },
+    { n: 'The Comb', w: [[240, 16, 26, 300], [430, 224, 26, 300], [620, 16, 26, 300], [810, 224, 26, 300]], s: [], wa: [], st: [110, 440], h: [880, 100] },
+    { n: 'The Steps', w: [[250, 380, 120, 120], [420, 280, 120, 120], [590, 180, 120, 120], [760, 80, 120, 120]], s: [], wa: [], st: [110, 460], h: [900, 60] },
+    { n: 'The Beach', w: [], s: [[16, 300, 912, 224]], wa: [], st: [110, 460], h: [850, 460] },
+    { n: 'Peninsula', w: [], s: [], wa: [[520, 120, 40, 404], [560, 120, 300, 40]], st: [110, 270], h: [790, 340] },
+    { n: 'Chicane', w: [[350, 120, 80, 180], [540, 240, 80, 180]], s: [], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'Two Rooms', w: [[470, 16, 26, 420]], s: [], wa: [], st: [110, 140], h: [850, 140] },
+    { n: 'Sand Snake', w: [], s: [[200, 80, 120, 360], [320, 360, 320, 80], [640, 120, 120, 320]], wa: [], st: [110, 270], h: [850, 270] },
+    { n: 'The Cross', w: [[440, 120, 80, 300], [330, 230, 300, 80]], s: [], wa: [], st: [110, 80], h: [850, 460] },
+    { n: 'Minefield', w: [[260, 90, 26, 26], [380, 200, 26, 26], [300, 330, 26, 26], [500, 120, 26, 26], [520, 400, 26, 26], [660, 250, 26, 26], [740, 100, 26, 26], [700, 430, 26, 26]], s: [[420, 250, 90, 90]], wa: [], st: [110, 270], h: [860, 270] },
+    { n: 'The Gauntlet', w: [[300, 16, 26, 200], [300, 324, 26, 200], [640, 150, 26, 240]], s: [[400, 200, 140, 140]], wa: [[760, 16, 60, 160], [760, 364, 60, 160]], st: [110, 270], h: [880, 270] },
   ];
 
   function allWalls() {
-    return [[0, 0, 960, T], [0, 540 - T, 960, T], [0, 0, T, 540], [960 - T, 0, T, 540], ...course.walls];
+    return [[0, 0, 960, T], [0, 540 - T, 960, T], [0, 0, T, 540], [960 - T, 0, T, 540], ...map.w];
   }
-  function inSand(x, y) {
-    return course.sand.some(([sx, sy, sw, sh]) => x > sx && x < sx + sw && y > sy && y < sy + sh);
+  const inRect = (x, y, [rx, ry, rw, rh]) => x > rx && x < rx + rw && y > ry && y < ry + rh;
+  const inSand = (x, y) => map.s.some((r) => inRect(x, y, r));
+  const inWater = (x, y) => map.wa.some((r) => inRect(x, y, r));
+
+  function myTurn() { return turn === E.me && phase === 'aim' && E.playing && !matchDone; }
+
+  function setHudLine() {
+    E.setHud(`⛳ Hole ${holeIdx + 1}/${suddenDeath ? '∞' : nHoles} · ${E.names[0]} <b style="color:${E.colors[0]}">${totals[0]}</b> — <b style="color:${E.colors[1]}">${totals[1]}</b> ${E.names[1]}`);
+  }
+
+  function startHole() {
+    map = MAPS[order[holeIdx % order.length]];
+    ball = { x: map.st[0], y: map.st[1], vx: 0, vy: 0 };
+    foeBall = { x: map.st[0], y: map.st[1] };
+    foe = makeInterp();
+    strokes = [0, 0]; holed = [false, false];
+    turn = holeIdx % 2; // alternate honors
+    phase = 'aim'; aiming = false; aimVec = null;
+    preShot = { x: ball.x, y: ball.y };
+    stopT = 0; interT = 0;
+    setHudLine();
+  }
+
+  function finishShot(sunk) {
+    // called on MY client when my shot ends (ball stopped / sunk / picked up)
+    if (sunk) holed[E.me] = true;
+    if (!sunk && strokes[E.me] >= MAX_STROKES) { holed[E.me] = true; strokes[E.me] = MAX_STROKES; }
+    phase = 'aim';
+    E.gsend({ done: { x: Math.round(ball.x), y: Math.round(ball.y), h: holed[E.me] ? 1 : 0, s: strokes[E.me] } });
+    advanceTurn();
+  }
+
+  function advanceTurn() {
+    if (holed[0] && holed[1]) {
+      totals[0] += strokes[0]; totals[1] += strokes[1];
+      phase = 'inter'; interT = 3.0;
+      setHudLine();
+      return;
+    }
+    const other = 1 - turn;
+    turn = holed[other] ? turn : other;
+  }
+
+  function nextHoleOrEnd() {
+    const played = holeIdx + 1;
+    if (suddenDeath) {
+      if (strokes[0] !== strokes[1]) { endMatch(strokes[0] < strokes[1] ? 0 : 1); return; }
+    } else if (played >= nHoles) {
+      if (totals[0] !== totals[1]) { endMatch(totals[0] < totals[1] ? 0 : 1); return; }
+      suddenDeath = true; // tied — sudden death holes
+    }
+    holeIdx++;
+    startHole();
+  }
+
+  function endMatch(w) {
+    matchDone = true;
+    phase = 'end';
+    E.matchWin(w);
   }
 
   return {
     name: 'Minigolf', ico: '⛳',
-    desc: 'Same hole, both play at once — first to sink scores.',
-    controls: 'Drag from your ball & release to putt · fewer bounces, more glory',
+    desc: '30 holes, turn-based stroke play. Lowest total wins.',
+    controls: 'On YOUR turn: drag from your ball & release to putt · water = +1 penalty · max 8 strokes',
 
     init(e) { E = e; },
 
     newRound() {
-      course = COURSES[Math.floor(E.rand() * COURSES.length)];
-      ball = { x: course.start[0], y: course.start[1], vx: 0, vy: 0 };
-      foe = makeInterp(); foeI = null;
-      strokes = 0; foeStrokes = 0;
-      aiming = false; aimVec = null;
-      sunk = false; foeSunk = false;
+      nHoles = clamp((E.opts && E.opts.holes) || 9, 1, 30);
+      // seeded shuffle of the 30 maps — same order on both clients
+      order = MAPS.map((_, i) => i);
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(E.rand() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      holeIdx = 0; totals = [0, 0];
+      suddenDeath = false; matchDone = false;
       parts = [];
       this._lastSent = 0;
+      startHole();
     },
 
     update(dt) {
-      if (!sunk) {
+      if (phase === 'inter') {
+        interT -= dt;
+        if (interT <= 0) nextHoleOrEnd();
+      }
+      // my ball physics only while my shot is rolling
+      if (phase === 'roll' && E.playing) {
         const sp = Math.hypot(ball.vx, ball.vy);
         if (sp > 0) {
           const decel = (inSand(ball.x, ball.y) ? 900 : 240) * dt;
@@ -689,96 +768,121 @@ regGame('golf', (() => {
               }
             }
           }
+          // water hazard: +1 penalty, back to where you played from
+          if (inWater(ball.x, ball.y)) {
+            SFX.losePoint();
+            for (let i = 0; i < 12; i++) parts.push({ x: ball.x, y: ball.y, vx: (Math.random() - 0.5) * 160, vy: -Math.random() * 180, life: 0.6, c: '#69b6e8' });
+            strokes[E.me] = Math.min(MAX_STROKES, strokes[E.me] + 1);
+            ball.x = preShot.x; ball.y = preShot.y; ball.vx = 0; ball.vy = 0;
+            finishShot(false);
+          }
         }
         // hole pull + sink
-        const [hx, hy] = course.hole;
+        const [hx, hy] = map.h;
         const d = Math.hypot(ball.x - hx, ball.y - hy);
         const spd = Math.hypot(ball.vx, ball.vy);
-        if (d < 18 && spd < 320) {
+        if (d < 18 && spd < 320 && spd > 0) {
           ball.vx += ((hx - ball.x) / (d || 1)) * 500 * dt;
           ball.vy += ((hy - ball.y) / (d || 1)) * 500 * dt;
         }
-        if (d < 10 && spd < 300 && E.playing) {
-          sunk = true; ball.vx = ball.vy = 0; ball.x = hx; ball.y = hy;
+        if (phase === 'roll' && d < 10 && spd < 300) {
+          ball.vx = 0; ball.vy = 0; ball.x = hx; ball.y = hy;
           SFX.sink();
-          for (let i = 0; i < 16; i++) parts.push({ x: hx, y: hy, vx: Math.cos(i / 16 * 6.28) * 90, vy: Math.sin(i / 16 * 6.28) * 90 - 60, life: 0.8 });
-          E.gsend({ sunk: strokes });
-          E.claimPoint(E.me);
-        }
+          for (let i = 0; i < 16; i++) parts.push({ x: hx, y: hy, vx: Math.cos(i / 16 * 6.28) * 90, vy: Math.sin(i / 16 * 6.28) * 90 - 60, life: 0.8, c: '#ffd166' });
+          finishShot(true);
+        } else if (phase === 'roll' && Math.hypot(ball.vx, ball.vy) === 0) {
+          stopT += dt;
+          if (stopT > 0.25) { stopT = 0; finishShot(false); }
+        } else stopT = 0;
       }
       parts.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 200 * dt; p.life -= dt; });
       parts = parts.filter((p) => p.life > 0);
       this._lastSent += dt;
       if (this._lastSent > 1 / 25) {
         this._lastSent = 0;
-        E.gsend({ b: [Math.round(ball.x), Math.round(ball.y)] });
+        if (phase === 'roll') E.gsend({ b: [Math.round(ball.x), Math.round(ball.y)] });
       }
-      foeI = foe.get(['x', 'y']);
+      const fi = foe.get(['x', 'y']);
+      if (fi && turn !== E.me && !holed[1 - E.me]) { foeBall.x = fi.x; foeBall.y = fi.y; }
     },
 
-    canPutt() {
-      return E.playing && !sunk && Math.hypot(ball.vx, ball.vy) < 5;
-    },
     onDown(x, y) {
-      if (this.canPutt()) { aiming = true; aimVec = { x, y }; }
+      if (myTurn()) { aiming = true; aimVec = { x, y }; }
     },
     onMove(x, y) { if (aiming) aimVec = { x, y }; },
     onUp(x, y) {
       if (!aiming) return;
       aiming = false;
-      if (!this.canPutt()) return;
+      if (!myTurn()) return;
       let dx = ball.x - x, dy = ball.y - y;
       const len = Math.hypot(dx, dy);
       if (len < 14) return; // cancel
       const pow = Math.min(len, 240) / 240;
+      preShot = { x: ball.x, y: ball.y };
       ball.vx = (dx / len) * pow * 640;
       ball.vy = (dy / len) * pow * 640;
-      strokes++;
+      strokes[E.me]++;
+      phase = 'roll'; stopT = 0;
       SFX.putt();
-      E.gsend({ stroke: strokes });
+      E.gsend({ stroke: strokes[E.me] });
     },
 
     onNet(d) {
-      if (d.b) foe.push({ x: d.b[0], y: d.b[1] });
-      if (d.stroke != null) { foeStrokes = d.stroke; SFX.putt(); }
-      if (d.sunk != null) { foeSunk = true; foeStrokes = d.sunk; SFX.sink(); }
+      if (d.b) { foe.push({ x: d.b[0], y: d.b[1] }); }
+      if (d.stroke != null) { strokes[1 - E.me] = d.stroke; SFX.putt(); }
+      if (d.done) {
+        foeBall.x = d.done.x; foeBall.y = d.done.y;
+        strokes[1 - E.me] = d.done.s;
+        if (d.done.h) { holed[1 - E.me] = true; if (d.done.h) SFX.sink(); }
+        foe.clear();
+        advanceTurn();
+      }
     },
 
     draw() {
       const c = E.ctx;
       c.fillStyle = '#1e4d2b'; c.fillRect(0, 0, 960, 540);
-      // mow stripes
       for (let i = 0; i < 10; i++) { if (i % 2) { c.fillStyle = 'rgba(255,255,255,0.025)'; c.fillRect(i * 96, 0, 96, 540); } }
-      for (const [sx, sy, sw, sh] of course.sand) {
+      for (const [sx, sy, sw, sh] of map.s) {
         c.fillStyle = '#c2a25c'; c.fillRect(sx, sy, sw, sh);
         c.fillStyle = 'rgba(0,0,0,0.08)';
-        for (let i = 0; i < 5; i++) c.fillRect(sx + 10, sy + 8 + i * (sh / 5), sw - 20, 2);
+        for (let i = 0; i < 5; i++) c.fillRect(sx + 8, sy + 8 + i * (sh / 5), sw - 16, 2);
+      }
+      for (const [wx, wy, ww, wh] of map.wa) {
+        c.fillStyle = '#1b4965'; c.fillRect(wx, wy, ww, wh);
+        c.fillStyle = 'rgba(255,255,255,0.12)';
+        const ph = performance.now() / 700;
+        for (let i = 0; i < Math.floor(wh / 22); i++) c.fillRect(wx + 4 + Math.sin(ph + i) * 3, wy + 8 + i * 22, ww - 14, 2.5);
       }
       for (const [x, y, w, h] of allWalls()) {
         c.fillStyle = '#6b4a2b'; c.fillRect(x, y, w, h);
         c.fillStyle = '#7d5a38'; c.fillRect(x, y, w, 4);
       }
-      // hole + flag
-      const [hx, hy] = course.hole;
+      const [hx, hy] = map.h;
       c.fillStyle = '#0a0a0a'; c.beginPath(); c.arc(hx, hy, 11, 0, 7); c.fill();
       c.strokeStyle = '#ddd'; c.lineWidth = 3;
       c.beginPath(); c.moveTo(hx, hy - 2); c.lineTo(hx, hy - 42); c.stroke();
       c.fillStyle = '#e63946'; c.beginPath(); c.moveTo(hx, hy - 42); c.lineTo(hx + 22, hy - 34); c.lineTo(hx, hy - 26); c.fill();
-      // foe ghost ball
-      if (foeI && !foeSunk) {
-        c.globalAlpha = 0.55;
-        c.fillStyle = E.colors[1 - E.me];
-        c.beginPath(); c.arc(foeI.x, foeI.y, R, 0, 7); c.fill();
+      // opponent ball
+      if (!holed[1 - E.me] || turn === 1 - E.me) {
+        c.globalAlpha = 0.85;
+        c.fillStyle = '#f5f5f5';
+        c.beginPath(); c.arc(foeBall.x, foeBall.y, R, 0, 7); c.fill();
+        c.strokeStyle = E.colors[1 - E.me]; c.lineWidth = 2.5; c.stroke();
         c.globalAlpha = 1;
       }
       // my ball
-      if (!sunk) {
-        c.fillStyle = '#f5f5f5';
+      if (!holed[E.me]) {
+        c.fillStyle = '#fff';
         c.beginPath(); c.arc(ball.x, ball.y, R, 0, 7); c.fill();
         c.strokeStyle = E.colors[E.me]; c.lineWidth = 2.5; c.stroke();
+        if (myTurn() && !aiming) { // pulse to show it's your go
+          c.strokeStyle = E.colors[E.me]; c.globalAlpha = 0.4 + 0.3 * Math.sin(performance.now() / 250);
+          c.lineWidth = 2; c.beginPath(); c.arc(ball.x, ball.y, R + 7, 0, 7); c.stroke(); c.globalAlpha = 1;
+        }
       }
       // aim arrow
-      if (aiming && aimVec && this.canPutt()) {
+      if (aiming && aimVec && myTurn()) {
         let dx = ball.x - aimVec.x, dy = ball.y - aimVec.y;
         const len = Math.hypot(dx, dy);
         if (len > 14) {
@@ -796,13 +900,50 @@ regGame('golf', (() => {
         }
       }
       for (const p of parts) {
-        c.fillStyle = '#ffd166'; c.globalAlpha = p.life; c.fillRect(p.x - 2, p.y - 2, 4, 4); c.globalAlpha = 1;
+        c.fillStyle = p.c; c.globalAlpha = Math.min(1, p.life * 1.6); c.fillRect(p.x - 2.5, p.y - 2.5, 5, 5); c.globalAlpha = 1;
       }
-      // stroke counters
+      // hole info + turn banner
       c.font = 'bold 15px system-ui'; c.textAlign = 'left';
-      c.fillStyle = E.colors[E.me]; c.fillText(`You: ${strokes} stroke${strokes === 1 ? '' : 's'}${sunk ? ' ⛳' : ''}`, 30, 505);
+      c.fillStyle = 'rgba(255,255,255,0.85)';
+      c.fillText(`${suddenDeath ? '☠ SUDDEN DEATH — ' : ''}Hole ${holeIdx + 1}: ${map.n}`, 30, 505);
       c.textAlign = 'right';
-      c.fillStyle = E.colors[1 - E.me]; c.fillText(`${E.names[1 - E.me]}: ${foeStrokes}${foeSunk ? ' ⛳' : ''}`, 930, 505);
+      c.fillStyle = E.colors[E.me];
+      c.fillText(`You: ${strokes[E.me]}${holed[E.me] ? ' ⛳' : ''}`, 800, 505);
+      c.fillStyle = E.colors[1 - E.me];
+      c.fillText(`${E.names[1 - E.me]}: ${strokes[1 - E.me]}${holed[1 - E.me] ? ' ⛳' : ''}`, 930, 505);
+      c.textAlign = 'center';
+      if (E.playing && phase === 'aim' && !matchDone) {
+        const mine = turn === E.me;
+        c.fillStyle = mine ? E.colors[E.me] : 'rgba(255,255,255,0.55)';
+        c.font = 'bold 19px system-ui';
+        c.fillText(mine ? '▶ YOUR TURN — drag from your ball' : `${E.names[turn]} is putting…`, 480, 46);
+      }
+      // between-holes scorecard
+      if (phase === 'inter' || phase === 'end') {
+        c.fillStyle = 'rgba(10,14,20,0.88)';
+        c.fillRect(160, 110, 640, 320);
+        c.strokeStyle = '#2b3a4e'; c.lineWidth = 2; c.strokeRect(160, 110, 640, 320);
+        c.fillStyle = '#ffd166'; c.font = 'bold 24px system-ui';
+        c.fillText(`Hole ${holeIdx + 1} complete`, 480, 150);
+        c.font = 'bold 19px system-ui';
+        const w0 = strokes[0] < strokes[1], tie = strokes[0] === strokes[1];
+        c.fillStyle = E.colors[0];
+        c.fillText(`${E.names[0]}: ${strokes[0]} stroke${strokes[0] === 1 ? '' : 's'}${!tie && w0 ? '  🏅' : ''}`, 480, 195);
+        c.fillStyle = E.colors[1];
+        c.fillText(`${E.names[1]}: ${strokes[1]} stroke${strokes[1] === 1 ? '' : 's'}${!tie && !w0 ? '  🏅' : ''}`, 480, 228);
+        c.fillStyle = '#fff'; c.font = 'bold 26px system-ui';
+        c.fillText(`TOTAL   ${totals[0]} — ${totals[1]}`, 480, 285);
+        c.fillStyle = 'rgba(255,255,255,0.6)'; c.font = '15px system-ui';
+        const left = suddenDeath ? 'sudden death!' : `${nHoles - holeIdx - 1} hole${nHoles - holeIdx - 1 === 1 ? '' : 's'} to go`;
+        c.fillText(phase === 'end' ? 'final scores' : `next hole in ${Math.ceil(interT)}… (${left})`, 480, 330);
+        if (phase === 'end' || (holeIdx + 1 >= nHoles && !suddenDeath) ) {
+          const lead = totals[0] === totals[1] ? null : (totals[0] < totals[1] ? 0 : 1);
+          if (lead != null) {
+            c.fillStyle = E.colors[lead]; c.font = 'bold 21px system-ui';
+            c.fillText(`${E.names[lead]} wins the round of golf! 🏆`, 480, 375);
+          }
+        }
+      }
       c.textAlign = 'left';
     },
   };
@@ -1224,18 +1365,32 @@ regGame('sumo', (() => {
         if (sp > MAXV + 400) { me.vx *= (MAXV + 400) / sp; me.vy *= (MAXV + 400) / sp; }
         me.x += me.vx * dt; me.y += me.vy * dt;
 
-        // shove: symmetric spring push against opponent (each side moves own body)
+        // shove: real momentum exchange. Both clients run the same elastic collision
+        // (my body + opponent's streamed pos/vel) and each applies the result to
+        // their OWN body — ram someone and they actually go flying.
         if (foeI && !foeFell) {
+          const fv = foe.latest() || { vx: 0, vy: 0 };
           const dx = me.x - foeI.x, dy = me.y - foeI.y;
           const d = Math.hypot(dx, dy);
           if (d < R * 2 && d > 0.001) {
-            const overlap = R * 2 - d;
             const nx = dx / d, ny = dy / d;
-            me.x += nx * overlap * 0.5;
-            me.y += ny * overlap * 0.5;
-            me.vx += nx * overlap * 26 * dt * 60;
-            me.vy += ny * overlap * 26 * dt * 60;
-            if (!this._touch) { SFX.paddle(); this._touch = true; }
+            // separate my body out of the overlap
+            const overlap = R * 2 - d;
+            me.x += nx * overlap * 0.55;
+            me.y += ny * overlap * 0.55;
+            // elastic impulse (equal masses, restitution 0.85)
+            const rvx = me.vx - (fv.vx || 0), rvy = me.vy - (fv.vy || 0);
+            const vn = rvx * nx + rvy * ny;
+            if (vn < 0) {
+              const j = -(1 + 0.85) * vn * 0.5;
+              me.vx += nx * j; me.vy += ny * j;
+              if (!this._touch) {
+                SFX.paddle();
+                if (Math.abs(vn) > 220) SFX.hit();
+                for (let i = 0; i < 6; i++) parts.push({ x: (me.x + foeI.x) / 2, y: (me.y + foeI.y) / 2, vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200, life: 0.35, c: '#fff' });
+                this._touch = true;
+              }
+            }
           } else this._touch = false;
         }
 
@@ -1254,13 +1409,13 @@ regGame('sumo', (() => {
       this._lastSent += dt;
       if (this._lastSent > 1 / 30 && !fell) {
         this._lastSent = 0;
-        E.gsend({ su: [Math.round(me.x), Math.round(me.y)] });
+        E.gsend({ su: [Math.round(me.x), Math.round(me.y), Math.round(me.vx), Math.round(me.vy)] });
       }
       foeI = foe.get(['x', 'y']);
     },
 
     onNet(d) {
-      if (d.su) foe.push({ x: d.su[0], y: d.su[1] });
+      if (d.su) foe.push({ x: d.su[0], y: d.su[1], vx: d.su[2] || 0, vy: d.su[3] || 0 });
       if (d.fell) { foeFell = true; SFX.boom(); }
     },
 
@@ -1323,9 +1478,15 @@ regGame('sumo', (() => {
 // your own death (fair under latency). Host runs the bots. First human down loses the round.
 regGame('bomb', (() => {
   let E, grid, powerups, bombs, flames, me, foe, foeI, bots, dead, foeDead, parts, cfgBots;
+  let lives, foeLives, foeGhost, prot, respawnT, mySpawn;
   const COLS = 15, ROWS = 9, CS = 60, OX = 30, OY = 0, PR = 16;
   const BOT_COLS = ['#b98af7', '#8ee6a1'];
-  const FUSE = 2.5, FLAME_T = 0.5;
+  const FUSE = 2.5, FLAME_T = 0.5, LIVES = 3;
+  const PERKS = {
+    bomb: ['💣', 'Extra Bomb', 'Carry one more bomb at a time'],
+    fire: ['🔥', 'Bigger Blast', '+1 tile of explosion range'],
+    speed: ['⚡', 'Speed Boost', 'Move faster'],
+  };
 
   const cellAt = (px, py) => [clamp(Math.round((px - OX - CS / 2) / CS), 0, COLS - 1), clamp(Math.round((py - OY - CS / 2) / CS), 0, ROWS - 1)];
   const cellXY = (cx, cy) => [OX + cx * CS + CS / 2, OY + cy * CS + CS / 2];
@@ -1333,17 +1494,11 @@ regGame('bomb', (() => {
   const inGrid = (cx, cy) => cx >= 0 && cx < COLS && cy >= 0 && cy < ROWS;
   const key = (cx, cy) => cx + ',' + cy;
 
-  function solidAt(cx, cy, forWho) {
+  function solidAt(cx, cy) {
     if (!inGrid(cx, cy)) return true;
     if (isPillar(cx, cy)) return true;
     if (grid[cy][cx] === 1) return true; // crate
-    for (const b of bombs) {
-      if (b.cx === cx && b.cy === cy) {
-        if (forWho && forWho.ghostBomb === b) continue; // still standing on own fresh bomb
-        return true;
-      }
-    }
-    return false;
+    return false; // bombs are walkable!
   }
 
   function moveActor(a, vx, vy, dt, speed) {
@@ -1352,7 +1507,7 @@ regGame('bomb', (() => {
       const solids = [];
       const [ccx, ccy] = cellAt(a.x, a.y);
       for (let cy = ccy - 1; cy <= ccy + 1; cy++) for (let cx = ccx - 1; cx <= ccx + 1; cx++) {
-        if (solidAt(cx, cy, a)) solids.push([OX + cx * CS, OY + cy * CS]);
+        if (solidAt(cx, cy)) solids.push([OX + cx * CS, OY + cy * CS]);
       }
       for (const [rx, ry] of solids) {
         const c = circleRect(a.x, a.y, PR, rx, ry, CS, CS);
@@ -1365,11 +1520,6 @@ regGame('bomb', (() => {
       const l = Math.hypot(vx, vy);
       step((vx / l) * speed * dt, 0);
       step(0, (vy / l) * speed * dt);
-      // leave own bomb cell -> it becomes solid
-      if (a.ghostBomb) {
-        const [cx, cy] = cellAt(a.x, a.y);
-        if (cx !== a.ghostBomb.cx || cy !== a.ghostBomb.cy) a.ghostBomb = null;
-      }
     }
   }
 
@@ -1446,7 +1596,6 @@ regGame('bomb', (() => {
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const nx = cx + dx, ny = cy + dy, k = key(nx, ny);
         if (!inGrid(nx, ny) || seen[k] || isPillar(nx, ny) || grid[ny][nx] === 1) continue;
-        if (bombs.some((b) => b.cx === nx && b.cy === ny)) continue;
         if (!allowDanger && danger[k]) continue;
         seen[k] = true; prev[k] = [cx, cy]; q.push([nx, ny]);
       }
@@ -1471,7 +1620,6 @@ regGame('bomb', (() => {
         const nb = placeBomb('bot' + bot.i, cx, cy, 2);
         if (nb) {
           bot.bombs--; nb.onDone = () => bot.bombs++;
-          bot.ghostBomb = nb;
           E.gsend({ bb: [bot.i, cx, cy, 2] });
           const d2m = dangerMap();
           path = bfs(cx, cy, (x, y) => !d2m[key(x, y)], d2m, true);
@@ -1496,8 +1644,8 @@ regGame('bomb', (() => {
 
   return {
     name: 'Bomb Arena', ico: '💣',
-    desc: 'Crates, power-ups, big chains. Add bots in the lobby!',
-    controls: 'WASD move · SPACE drops a bomb · grab 💣/🔥/⚡ power-ups · don\'t nuke yourself',
+    desc: '3 lives, crates, power-ups. Add bots in the lobby!',
+    controls: 'WASD move · SPACE drops a bomb (you can walk over them) · 💣 +1 bomb · 🔥 +1 range · ⚡ speed · 3 ♥ each',
 
     init(e) { E = e; },
 
@@ -1514,20 +1662,29 @@ regGame('bomb', (() => {
           const r = E.rand();
           if (r < 0.13) powerups.hidden[key(x, y)] = 'bomb';
           else if (r < 0.26) powerups.hidden[key(x, y)] = 'fire';
-          else if (r < 0.36) powerups.hidden[key(x, y)] = 'speed';
+          else if (r < 0.39) powerups.hidden[key(x, y)] = 'speed';
         }
       }
-      const myS = spawns[E.me], foS = spawns[1 - E.me];
-      me = { x: cellXY(...myS)[0], y: cellXY(...myS)[1], speed: 150, maxBombs: 1, bombs: 1, radius: 2, ghostBomb: null };
+      const myS = spawns[E.me];
+      mySpawn = cellXY(...myS);
+      me = { x: mySpawn[0], y: mySpawn[1], speed: 150, maxBombs: 1, bombs: 1, radius: 2 };
       foe = makeInterp(); foeI = null;
       bots = [];
       for (let i = 0; i < cfgBots; i++) {
         const s = spawns[2 + i];
-        bots.push({ i, x: cellXY(...s)[0], y: cellXY(...s)[1], alive: true, bombs: 1, think: 0.5 + i * 0.3, path: null, ghostBomb: null });
+        bots.push({ i, x: cellXY(...s)[0], y: cellXY(...s)[1], alive: true, bombs: 1, think: 0.5 + i * 0.3, path: null });
       }
       bombs = []; flames = {}; parts = [];
       dead = false; foeDead = false;
-      this._lastSent = 0; this._foeStats = { radius: 2 };
+      lives = LIVES; foeLives = LIVES; foeGhost = false;
+      prot = 1.5; respawnT = 0;
+      this._lastSent = 0;
+      this._hudLives();
+    },
+
+    _hudLives() {
+      const h = (n, col) => `<span style="color:${col};letter-spacing:2px">${'♥'.repeat(Math.max(0, n))}<span style="opacity:.25">${'♥'.repeat(Math.max(0, LIVES - n))}</span></span>`;
+      E.setHud(`<span style="color:${E.colors[0]}">${E.names[0]}</span> ${h(E.me === 0 ? lives : foeLives, E.colors[0])} &nbsp;💣&nbsp; ${h(E.me === 1 ? lives : foeLives, E.colors[1])} <span style="color:${E.colors[1]}">${E.names[1]}</span>`);
     },
 
     update(dt) {
@@ -1541,6 +1698,17 @@ regGame('bomb', (() => {
       parts.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt; p.life -= dt; });
       parts = parts.filter((p) => p.life > 0);
 
+      prot = Math.max(0, prot - dt);
+      // respawn countdown
+      if (dead && lives > 0 && E.playing) {
+        respawnT -= dt;
+        if (respawnT <= 0) {
+          dead = false;
+          me.x = mySpawn[0]; me.y = mySpawn[1];
+          prot = 2.5; // shimmering grace period
+          SFX.go();
+        }
+      }
       if (E.playing && !dead) {
         let vx = 0, vy = 0;
         if (E.keys.has('w')) vy -= 1; if (E.keys.has('s')) vy += 1;
@@ -1553,17 +1721,20 @@ regGame('bomb', (() => {
           delete powerups.live[key(cx, cy)];
           if (pu === 'bomb') { me.maxBombs = Math.min(4, me.maxBombs + 1); me.bombs++; }
           if (pu === 'fire') me.radius = Math.min(6, me.radius + 1);
-          if (pu === 'speed') me.speed = Math.min(230, me.speed + 22);
+          if (pu === 'speed') me.speed = Math.min(240, me.speed + 24);
           SFX.point();
           E.gsend({ pu: [cx, cy] });
         }
-        // death check (own screen decides — fair under lag)
-        if (inFlames(me.x, me.y)) {
-          dead = true;
+        // hit check (own screen decides — fair under lag). 3 lives per game.
+        if (prot <= 0 && inFlames(me.x, me.y)) {
+          lives--;
+          this._hudLives();
           SFX.hit(); SFX.boom();
           for (let i = 0; i < 20; i++) parts.push({ x: me.x, y: me.y, vx: (Math.random() - 0.5) * 300, vy: (Math.random() - 0.5) * 300, life: 0.7, c: E.colors[E.me] });
-          E.gsend({ die: 1 });
-          E.claimPoint(1 - E.me);
+          dead = true;
+          E.gsend({ die: lives });
+          if (lives <= 0) E.matchWin(1 - E.me);
+          else respawnT = 1.3;
         }
       }
 
@@ -1596,16 +1767,21 @@ regGame('bomb', (() => {
       const b = placeBomb(E.me, cx, cy, me.radius);
       if (b) {
         me.bombs--; b.onDone = () => me.bombs++;
-        me.ghostBomb = b;
         E.gsend({ bomb: [cx, cy, me.radius] });
       }
     },
 
     onNet(d) {
-      if (d.bp) foe.push({ x: d.bp[0], y: d.bp[1] });
+      if (d.bp) { foe.push({ x: d.bp[0], y: d.bp[1] }); foeGhost = false; }
       if (d.bomb) placeBomb(1 - E.me, d.bomb[0], d.bomb[1], d.bomb[2]);
       if (d.pu) delete powerups.live[key(d.pu[0], d.pu[1])];
-      if (d.die) { foeDead = true; SFX.boom(); }
+      if (d.die != null) {
+        foeLives = d.die;
+        this._hudLives();
+        SFX.boom();
+        if (foeLives <= 0) foeDead = true;
+        else foeGhost = true; // hidden until they respawn and stream again
+      }
       if (d.bt) { const bot = bots[d.bt[0]]; if (bot) { bot.x = d.bt[1]; bot.y = d.bt[2]; } }
       if (d.bb) placeBomb('bot' + d.bb[0], d.bb[1], d.bb[2], d.bb[3]);
       if (d.bd != null && bots[d.bd]) { bots[d.bd].alive = false; SFX.boom(); }
@@ -1674,8 +1850,10 @@ regGame('bomb', (() => {
         c.fillStyle = '#111'; c.beginPath(); c.arc(x - 4.6, y - 3, 1.7, 0, 7); c.arc(x + 5.4, y - 3, 1.7, 0, 7); c.fill();
       };
       for (const bot of bots) drawGuy(bot.x, bot.y, BOT_COLS[bot.i], !bot.alive);
-      if (foeI) drawGuy(foeI.x, foeI.y, E.colors[1 - E.me], foeDead);
+      if (foeI) drawGuy(foeI.x, foeI.y, E.colors[1 - E.me], foeDead || foeGhost);
+      if (prot > 0 && !dead) c.globalAlpha = 0.45 + 0.4 * Math.sin(performance.now() / 60);
       drawGuy(me.x, me.y, E.colors[E.me], dead);
+      c.globalAlpha = 1;
       for (const p of parts) {
         c.fillStyle = p.c; c.globalAlpha = Math.min(1, p.life * 2);
         c.fillRect(p.x - 3, p.y - 3, 6, 6); c.globalAlpha = 1;
@@ -1685,6 +1863,43 @@ regGame('bomb', (() => {
       c.fillStyle = 'rgba(0,0,0,0.45)'; c.fillRect(400, 2, 160, 20);
       c.fillStyle = 'rgba(255,255,255,0.9)';
       c.fillText(`💣${me.maxBombs}  🔥${me.radius}  ⚡${(me.speed / 150).toFixed(1)}x`, 480, 17);
+      // respawn message
+      if (dead && lives > 0) {
+        c.fillStyle = '#ffd166'; c.font = 'bold 26px system-ui';
+        c.fillText(`💔 respawning… ${'♥'.repeat(lives)} left`, 480, 250);
+      }
+      // perk legend during the countdown
+      if (E.state === 'countdown') {
+        const lx = 240, ly = 380, lw = 480, lh = 132;
+        c.fillStyle = 'rgba(10,14,20,0.88)'; c.fillRect(lx, ly, lw, lh);
+        c.strokeStyle = '#2b3a4e'; c.lineWidth = 2; c.strokeRect(lx, ly, lw, lh);
+        c.font = 'bold 15px system-ui'; c.fillStyle = '#ffd166';
+        c.fillText('POWER-UPS (hidden in crates)', 480, ly + 24);
+        c.font = '14px system-ui'; c.textAlign = 'left';
+        let yy = ly + 48;
+        for (const k of ['bomb', 'fire', 'speed']) {
+          const [ico, nm, ds] = PERKS[k];
+          c.fillStyle = '#fff'; c.fillText(`${ico} ${nm}`, lx + 24, yy);
+          c.fillStyle = 'rgba(255,255,255,0.6)'; c.fillText('— ' + ds, lx + 160, yy);
+          yy += 22;
+        }
+        c.fillStyle = '#ff6b6b'; c.textAlign = 'center';
+        c.fillText('♥♥♥ 3 lives — lose them all and your rival takes the game', 480, ly + 118);
+      }
+      // hover tooltip on ground perks
+      const [mcx, mcy] = cellAt(E.mouse.x, E.mouse.y);
+      const hoverPu = inGrid(mcx, mcy) && powerups.live[key(mcx, mcy)];
+      if (hoverPu) {
+        const [ico, nm, ds] = PERKS[hoverPu];
+        const tx = clamp(E.mouse.x + 14, 16, 700), ty = clamp(E.mouse.y - 40, 16, 480);
+        c.font = 'bold 13px system-ui'; c.textAlign = 'left';
+        const wpx = Math.max(c.measureText(`${ico} ${nm}`).width, c.measureText(ds).width) + 20;
+        c.fillStyle = 'rgba(10,14,20,0.92)'; c.fillRect(tx, ty, wpx, 42);
+        c.strokeStyle = '#ffd166'; c.lineWidth = 1; c.strokeRect(tx, ty, wpx, 42);
+        c.fillStyle = '#ffd166'; c.fillText(`${ico} ${nm}`, tx + 10, ty + 17);
+        c.fillStyle = 'rgba(255,255,255,0.8)'; c.font = '12px system-ui';
+        c.fillText(ds, tx + 10, ty + 33);
+      }
       c.textAlign = 'left';
     },
   };
@@ -1850,6 +2065,8 @@ regGame('quickdraw', (() => {
   let appState = 'menu';        // menu | wait | lobby | game
   let curGameId = null, game = null;
   let botsN = 0;                // Bomb Arena bots (synced between players)
+  let holesN = 9;               // Minigolf hole count (synced between players)
+  let hudOverride = null;       // games can take over the HUD line
   let score = [0, 0], round = 0, wins = {}; // wins[gameId] = [w0,w1]
   let roundTimers = [];
   let myCode = '';
@@ -1871,6 +2088,12 @@ regGame('quickdraw', (() => {
       if (E.state !== 'play') return;
       if (Net.isHost) applyPoint(w);
       else { E.state = 'claimed'; Net.send({ t: 'claim', w }); } // block double-claims client-side
+    },
+    setHud(text) { hudOverride = text; updateHUD(); },
+    matchWin(w) { // for match-based games (golf): declare the overall winner
+      if (E.state !== 'play') return;
+      if (Net.isHost) { score[w] = FIRST_TO - 1; applyPoint(w); }
+      else { E.state = 'claimed'; Net.send({ t: 'matchclaim', w }); }
     },
   };
 
@@ -1963,6 +2186,8 @@ regGame('quickdraw', (() => {
       case 'round': if (!Net.isHost && appState === 'game') startRound(m.seed, m.n); break;
       case 'score': if (!Net.isHost) { score = m.s.slice(); handleScored(m.w); } break;
       case 'claim': if (Net.isHost) applyPoint(m.w); break;
+      case 'matchclaim': if (Net.isHost && E.state === 'play') { score[m.w] = FIRST_TO - 1; applyPoint(m.w); } break;
+      case 'holes': holesN = m.n; syncHoleChips(); break;
       case 'quit': backToLobby(true); break;
     }
   });
@@ -1983,6 +2208,22 @@ regGame('quickdraw', (() => {
       const d = document.createElement('div');
       d.className = 'gcard';
       d.innerHTML = `<div class="ico">${G.ico}</div><div class="nm">${G.name}</div><div class="ds">${G.desc}</div>`;
+      if (id === 'golf') {
+        const row = document.createElement('div');
+        row.className = 'botrow';
+        row.innerHTML = `<span class="botlbl">holes:</span>` +
+          [9, 18, 30].map((n) => `<span class="botchip holechip${n === holesN ? ' onn' : ''}" data-h="${n}" style="width:auto;padding:0 7px">${n}</span>`).join('');
+        row.querySelectorAll('.holechip').forEach((ch) => {
+          ch.onclick = (ev) => {
+            ev.stopPropagation();
+            holesN = parseInt(ch.dataset.h, 10);
+            syncHoleChips();
+            Net.send({ t: 'holes', n: holesN });
+            SFX.click();
+          };
+        });
+        d.appendChild(row);
+      }
       if (id === 'bomb') {
         const row = document.createElement('div');
         row.className = 'botrow';
@@ -2026,20 +2267,26 @@ regGame('quickdraw', (() => {
   function later(fn, ms) { roundTimers.push(setTimeout(fn, ms)); }
 
   function syncBotChips() {
-    document.querySelectorAll('.botchip').forEach((ch) => {
+    document.querySelectorAll('.botchip[data-n]').forEach((ch) => {
       ch.classList.toggle('onn', parseInt(ch.dataset.n, 10) === botsN);
+    });
+  }
+  function syncHoleChips() {
+    document.querySelectorAll('.holechip').forEach((ch) => {
+      ch.classList.toggle('onn', parseInt(ch.dataset.h, 10) === holesN);
     });
   }
   function hostStartGame(id) {
     if (!GAMES[id]) return;
     const seed = (Math.random() * 0x7fffffff) | 0;
-    const opts = { bots: botsN };
+    const opts = { bots: botsN, holes: holesN };
     Net.send({ t: 'start', game: id, seed, opts });
     beginGame(id, seed, opts);
   }
   function beginGame(id, seed, opts) {
     clearTimers();
     E.opts = opts || {};
+    hudOverride = null;
     curGameId = id;
     game = GAMES[id];
     score = [0, 0]; round = 0;
@@ -2125,6 +2372,10 @@ regGame('quickdraw', (() => {
   }
   function sub(t) { $('subbanner').textContent = t; }
   function updateHUD() {
+    if (hudOverride != null) {
+      $('hud').innerHTML = `<span style="font-size:19px;font-weight:800;color:var(--txt)">${hudOverride}</span>`;
+      return;
+    }
     $('hud').innerHTML =
       `<span class="hn" style="color:${COLORS[0]}">${E.names[0]}</span>` +
       `<span style="color:${COLORS[0]}">${score[0]}</span>` +
@@ -2203,6 +2454,7 @@ regGame('quickdraw', (() => {
       get names() { return E.names.slice(); },
       get connected() { return Net.connected; },
       testPoint(w) { E.claimPoint(w); },
+      testMatchWin(w) { E.matchWin(w); },
     };
   }
 
