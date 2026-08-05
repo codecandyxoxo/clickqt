@@ -38,13 +38,18 @@
   #lobbyHead{display:flex; width:100%; justify-content:space-between; align-items:center;}
   .ptag{display:flex; align-items:center; gap:8px; font-weight:800; font-size:19px;}
   .dot{width:12px; height:12px; border-radius:50%;}
-  #games{display:grid; grid-template-columns:repeat(5,1fr); gap:12px; width:100%;}
+  #games{display:grid; grid-template-columns:repeat(3,1fr); gap:12px; width:100%;}
   .gcard{background:var(--panel); border:1px solid var(--edge); border-radius:12px; padding:16px 10px;
     text-align:center; cursor:pointer; transition:all .15s;}
   .gcard:hover{border-color:var(--gold); transform:translateY(-3px); background:var(--panel2);}
   .gcard .ico{font-size:34px;}
   .gcard .nm{font-weight:800; margin-top:8px; font-size:15px;}
   .gcard .ds{color:var(--dim); font-size:11.5px; margin-top:5px; line-height:1.35;}
+  .botrow{margin-top:8px; display:flex; gap:6px; justify-content:center; align-items:center;}
+  .botlbl{color:var(--dim); font-size:12px;}
+  .botchip{display:inline-block; width:24px; height:24px; line-height:24px; border-radius:6px;
+    background:var(--panel2); border:1px solid var(--edge); font-size:13px; font-weight:800; cursor:pointer;}
+  .botchip.onn{background:var(--gold); color:#222; border-color:var(--gold);}
   table#score{width:100%; border-collapse:collapse; font-size:15px;}
   #score th,#score td{padding:8px 10px; text-align:center; border-bottom:1px solid var(--edge);}
   #score th:first-child,#score td:first-child{text-align:left;}
@@ -805,10 +810,14 @@ regGame('golf', (() => {
 
 </script>
 <script>
-// ---- TABLE TENNIS: host-authoritative ball, local paddles ----
+// ---- TABLE TENNIS ----
+// Latency-proof: BOTH sides simulate the ball. Your own paddle is authoritative
+// on YOUR screen — if you touch it, you hit it. Paddle hits re-sync the ball
+// state on both ends; misses are reported by the player who missed.
 regGame('pong', (() => {
-  let E, myY, foeY, foePad, ball, ballI, speed, trail, served;
-  const PW = 13, PH = 104, BR = 7, MYX = () => (E.me === 0 ? 42 : 960 - 42 - PW);
+  let E, myY, foeY, foePad, ball, speed, trail, claimed;
+  const PW = 13, PH = 104, BR = 7;
+  const MYX = () => (E.me === 0 ? 42 : 960 - 42 - PW);
   const FOEX = () => (E.me === 0 ? 960 - 42 - PW : 42);
 
   return {
@@ -821,19 +830,18 @@ regGame('pong', (() => {
     newRound() {
       myY = 270; foeY = 270;
       foePad = makeInterp();
-      ballI = makeInterp();
       trail = [];
       speed = 380;
-      served = false;
-      // host owns the ball
+      claimed = false;
+      // identical seeded serve on both sides
       const dir = (E.round % 2 === 0 ? 1 : -1);
       const ang = (E.rand() - 0.5) * 0.9;
-      ball = { x: 480, y: 270, vx: Math.cos(ang) * speed * dir, vy: Math.sin(ang) * speed };
+      ball = { x: 480, y: 270, vx: Math.cos(ang) * 380 * dir, vy: Math.sin(ang) * 380 };
       this._lastSent = 0;
     },
 
     update(dt) {
-      // my paddle: mouse + keys
+      // my paddle
       const target = E.mouse.y;
       myY = lerp(myY, target, Math.min(1, dt * 18));
       if (E.keys.has('w')) myY -= 420 * dt;
@@ -843,87 +851,81 @@ regGame('pong', (() => {
       this._lastSent += dt;
       if (this._lastSent > 1 / 30) {
         this._lastSent = 0;
-        if (E.isHost) E.gsend({ hb: [Math.round(ball.x), Math.round(ball.y)], hp: Math.round(myY) });
-        else E.gsend({ gp: Math.round(myY) });
+        E.gsend({ pp: Math.round(myY) });
       }
 
-      if (E.isHost) {
-        if (E.playing) {
-          ball.x += ball.vx * dt; ball.y += ball.vy * dt;
-          if (ball.y < 20 + BR && ball.vy < 0) { ball.y = 20 + BR; ball.vy *= -1; SFX.bounce(); E.gsend({ snd: 'bounce' }); }
-          if (ball.y > 520 - BR && ball.vy > 0) { ball.y = 520 - BR; ball.vy *= -1; SFX.bounce(); E.gsend({ snd: 'bounce' }); }
-          // paddles: host is P0 (left), guest P1 (right)
-          const gp = foePad.latest();
-          const guestY = gp ? gp.y : 270;
-          const hostX = 42, guestX = 960 - 42 - PW;
-          // left paddle (host)
-          if (ball.vx < 0 && ball.x - BR < hostX + PW && ball.x - BR > hostX - 18 && Math.abs(ball.y - myY) < PH / 2 + BR) {
-            ball.x = hostX + PW + BR;
-            this._hit(ball, myY);
+      if (E.playing) {
+        const px = ball.x, py = ball.y;
+        ball.x += ball.vx * dt; ball.y += ball.vy * dt;
+        if (ball.y < 20 + BR && ball.vy < 0) { ball.y = 20 + BR; ball.vy *= -1; SFX.bounce(); }
+        if (ball.y > 520 - BR && ball.vy > 0) { ball.y = 520 - BR; ball.vy *= -1; SFX.bounce(); }
+
+        // swept collision against MY paddle only (local authority — no lag pass-through)
+        const left = E.me === 0;
+        const plane = left ? MYX() + PW + BR : MYX() - BR;
+        const towardMe = left ? ball.vx < 0 : ball.vx > 0;
+        if (towardMe) {
+          const crossed = left ? (px >= plane && ball.x < plane) : (px <= plane && ball.x > plane);
+          if (crossed) {
+            const tc = (plane - px) / (ball.x - px);
+            const yc = lerp(py, ball.y, clamp(tc, 0, 1));
+            if (Math.abs(yc - myY) < PH / 2 + BR) {
+              // hit!
+              const off = clamp((yc - myY) / (PH / 2), -1, 1);
+              speed = Math.min(900, speed * 1.055);
+              const dir = left ? 1 : -1;
+              const ang = off * 0.9;
+              ball.x = plane; ball.y = yc;
+              ball.vx = Math.cos(ang) * speed * dir;
+              ball.vy = Math.sin(ang) * speed + off * 60;
+              SFX.paddle();
+              E.gsend({ hb: [Math.round(ball.x), Math.round(ball.y), Math.round(ball.vx), Math.round(ball.vy), Math.round(speed)] });
+            }
           }
-          // right paddle (guest)
-          if (ball.vx > 0 && ball.x + BR > guestX && ball.x + BR < guestX + PW + 18 && Math.abs(ball.y - guestY) < PH / 2 + BR) {
-            ball.x = guestX - BR;
-            this._hit(ball, guestY);
-          }
-          if (ball.x < -30) E.claimPoint(1);
-          if (ball.x > 990) E.claimPoint(0);
         }
-        trail.push({ x: ball.x, y: ball.y, life: 0.3 });
-      } else {
-        const bi = ballI.get(['x', 'y']);
-        if (bi) trail.push({ x: bi.x, y: bi.y, life: 0.3 });
+        // I missed — point for the opponent (reported by the one it hurts: trustworthy)
+        const pastMe = left ? ball.x < -30 : ball.x > 990;
+        if (pastMe && !claimed) { claimed = true; E.claimPoint(1 - E.me); }
       }
+
+      trail.push({ x: ball.x, y: ball.y, life: 0.3 });
       trail.forEach((t) => (t.life -= dt));
       trail = trail.filter((t) => t.life > 0);
       const fp = foePad.get(['y']);
       if (fp) foeY = fp.y;
     },
 
-    _hit(b, py) {
-      const off = clamp((b.y - py) / (PH / 2), -1, 1);
-      speed = Math.min(900, speed * 1.055);
-      const dir = b.vx > 0 ? -1 : 1;
-      const ang = off * 0.9;
-      b.vx = Math.cos(ang) * speed * dir;
-      b.vy = Math.sin(ang) * speed + off * 60;
-      SFX.paddle(); E.gsend({ snd: 'paddle' });
-    },
-
     onNet(d) {
-      if (d.gp != null) foePad.push({ y: d.gp });          // host receives guest paddle
-      if (d.hp != null) foePad.push({ y: d.hp });          // guest receives host paddle
-      if (d.hb) ballI.push({ x: d.hb[0], y: d.hb[1] });    // guest receives ball
-      if (d.snd === 'bounce') SFX.bounce();
-      if (d.snd === 'paddle') SFX.paddle();
+      if (d.pp != null) foePad.push({ y: d.pp });
+      if (d.hb) { // opponent hit — accept their state (their paddle, their authority)
+        ball.x = d.hb[0]; ball.y = d.hb[1]; ball.vx = d.hb[2]; ball.vy = d.hb[3];
+        speed = d.hb[4];
+        SFX.paddle();
+      }
     },
 
     draw() {
       const c = E.ctx;
-      c.fillStyle = '#0e2a4a'; c.fillRect(0, 0, 960, 540);      // blue table
+      c.fillStyle = '#0e2a4a'; c.fillRect(0, 0, 960, 540);
       c.fillStyle = '#123a66'; c.fillRect(0, 0, 960, 20); c.fillRect(0, 520, 960, 20);
       c.strokeStyle = 'rgba(255,255,255,0.8)'; c.lineWidth = 3;
       c.strokeRect(14, 24, 932, 492);
       c.beginPath(); c.moveTo(14, 270); c.lineTo(946, 270); c.lineWidth = 1.5; c.strokeStyle = 'rgba(255,255,255,0.35)'; c.stroke();
-      // net
       c.setLineDash([10, 8]); c.strokeStyle = 'rgba(255,255,255,0.5)'; c.lineWidth = 4;
       c.beginPath(); c.moveTo(480, 24); c.lineTo(480, 516); c.stroke(); c.setLineDash([]);
-      // trail
       for (const t of trail) {
         c.fillStyle = '#ffd166'; c.globalAlpha = t.life * 1.2;
         c.beginPath(); c.arc(t.x, t.y, BR * t.life * 3, 0, 7); c.fill();
       }
       c.globalAlpha = 1;
-      // ball
-      let bx, by;
-      if (E.isHost) { bx = ball.x; by = ball.y; }
-      else { const bi = ballI.get(['x', 'y']); bx = bi ? bi.x : 480; by = bi ? bi.y : 270; }
-      c.fillStyle = '#fff'; c.beginPath(); c.arc(bx, by, BR, 0, 7); c.fill();
-      // paddles
+      c.fillStyle = '#fff'; c.beginPath(); c.arc(ball.x, ball.y, BR, 0, 7); c.fill();
       c.fillStyle = E.colors[E.me];
       c.beginPath(); c.roundRect(MYX(), myY - PH / 2, PW, PH, 6); c.fill();
       c.fillStyle = E.colors[1 - E.me];
       c.beginPath(); c.roundRect(FOEX(), foeY - PH / 2, PW, PH, 6); c.fill();
+      // speed meter
+      c.fillStyle = 'rgba(255,255,255,0.35)'; c.font = 'bold 13px system-ui'; c.textAlign = 'center';
+      c.fillText(Math.round(speed) + ' px/s', 480, 508); c.textAlign = 'left';
     },
   };
 })());
@@ -932,8 +934,8 @@ regGame('pong', (() => {
 <script>
 // ---- TANK DUEL: bouncing shells, last tank standing ----
 regGame('tanks', (() => {
-  let E, walls, me, foe, foeI, shells, cd, dead, parts, shellSeq;
-  const SPEED = 150, TURN = 3.2, TR = 15, SR = 5, SHELL_SPEED = 330;
+  let E, walls, me, foe, foeI, shells, cd, dead, parts, shellSeq, prot, shake, treads, flash;
+  const SPEED = 175, TURN = 3.7, TR = 15, SR = 5, SHELL_SPEED = 360;
 
   function genWalls(rand) {
     const W = 960, H = 540, T = 16;
@@ -942,23 +944,30 @@ regGame('tanks', (() => {
       const bw = 40 + rand() * 80, bh = 40 + rand() * 80;
       const x = 130 + rand() * (W / 2 - 250), y = 40 + rand() * (H - 120 - bh);
       w.push([x, y, bw, bh]);
-      w.push([W - x - bw, H - y - bh, bw, bh]); // 180° mirror
+      w.push([W - x - bw, H - y - bh, bw, bh]); // 180° mirror for fairness
     }
     return w;
   }
 
   function boom(x, y, big) {
     SFX.boom();
-    for (let i = 0; i < (big ? 26 : 10); i++) {
-      const a = Math.random() * 6.28, s = 40 + Math.random() * (big ? 220 : 120);
+    shake = Math.max(shake, big ? 0.45 : 0.18);
+    for (let i = 0; i < (big ? 30 : 12); i++) {
+      const a = Math.random() * 6.28, s = 40 + Math.random() * (big ? 240 : 130);
       parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.5 + Math.random() * 0.4, c: ['#ffd166', '#ff8c42', '#e63946'][i % 3] });
     }
+  }
+
+  function castWall(ox, oy, dx, dy) {
+    let t = 2000;
+    for (const [x, y, w2, h] of walls) t = Math.min(t, rayRect(ox, oy, dx, dy, x, y, w2, h));
+    return t;
   }
 
   return {
     name: 'Tank Duel', ico: '🚜',
     desc: 'Shells bounce off walls. So can your mistakes.',
-    controls: 'W/S drive · A/D turn · mouse aims turret · click fires (shells bounce!)',
+    controls: 'W/S or ↑/↓ drive · A/D or ←/→ turn · mouse aims · click fires (1 bounce!)',
 
     init(e) { E = e; },
 
@@ -968,25 +977,36 @@ regGame('tanks', (() => {
         ? { x: 70, y: 70, h: 0.7, t: 0.7 }
         : { x: 890, y: 470, h: 0.7 + Math.PI, t: 0.7 + Math.PI };
       foe = makeInterp(); foeI = null;
-      shells = []; parts = [];
+      shells = []; parts = []; treads = [];
       cd = 0; dead = false; shellSeq = 0;
+      prot = 1.0; shake = 0; flash = 0;
       this._foeDead = false;
       this._lastSent = 0;
+      this._treadT = 0;
     },
 
     update(dt) {
+      prot = Math.max(0, prot - dt);
+      shake = Math.max(0, shake - dt * 1.6);
+      flash = Math.max(0, flash - dt);
       if (E.playing && !dead) {
-        if (E.keys.has('a')) me.h -= TURN * dt;
-        if (E.keys.has('d')) me.h += TURN * dt;
+        if (E.keys.has('a') || E.keys.has('arrowleft')) me.h -= TURN * dt;
+        if (E.keys.has('d') || E.keys.has('arrowright')) me.h += TURN * dt;
         let mv = 0;
-        if (E.keys.has('w')) mv = 1;
-        if (E.keys.has('s')) mv = -0.6;
+        if (E.keys.has('w') || E.keys.has('arrowup')) mv = 1;
+        if (E.keys.has('s') || E.keys.has('arrowdown')) mv = -0.65;
         if (mv) {
           me.x += Math.cos(me.h) * SPEED * mv * dt;
           me.y += Math.sin(me.h) * SPEED * mv * dt;
           for (const [x, y, w, h] of walls) {
             const c = circleRect(me.x, me.y, TR, x, y, w, h);
             if (c) { me.x = c.x; me.y = c.y; }
+          }
+          this._treadT += dt;
+          if (this._treadT > 0.06) {
+            this._treadT = 0;
+            treads.push({ x: me.x, y: me.y, h: me.h, life: 2.2 });
+            if (treads.length > 90) treads.shift();
           }
         }
         me.t = Math.atan2(E.mouse.y - me.y, E.mouse.x - me.x);
@@ -995,6 +1015,7 @@ regGame('tanks', (() => {
       // shells (simulated on both sides)
       for (const s of shells) {
         s.x += s.vx * dt; s.y += s.vy * dt;
+        s.hist.push({ x: s.x, y: s.y }); if (s.hist.length > 8) s.hist.shift();
         for (const [x, y, w, h] of walls) {
           const c = circleRect(s.x, s.y, SR, x, y, w, h);
           if (c) {
@@ -1007,10 +1028,10 @@ regGame('tanks', (() => {
           }
         }
         s.life -= dt;
-        // do I get hit? (each side detects hits on own tank)
-        if (!dead && !s.deadFx && E.playing) {
+        // do I get hit? (each side detects hits on own tank; brief spawn protection)
+        if (!dead && !s.deadFx && E.playing && prot <= 0) {
           const mine = s.owner === E.me;
-          const armed = !mine || s.bounces > 0 || s.life < 1.9; // own shell arms shortly after leaving barrel
+          const armed = !mine || s.bounces > 0 || s.life < 2.5;
           if (armed && dist2(s.x, s.y, me.x, me.y) < (TR + SR) * (TR + SR)) {
             s.deadFx = true;
             dead = true;
@@ -1023,6 +1044,8 @@ regGame('tanks', (() => {
       shells = shells.filter((s) => !s.deadFx && s.life > 0);
       parts.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.98; p.vy *= 0.98; p.life -= dt; });
       parts = parts.filter((p) => p.life > 0);
+      treads.forEach((t) => (t.life -= dt));
+      treads = treads.filter((t) => t.life > 0);
 
       this._lastSent += dt;
       if (this._lastSent > 1 / 30 && !dead) {
@@ -1033,14 +1056,14 @@ regGame('tanks', (() => {
     },
 
     onDown() {
-      if (!E.playing || dead || cd > 0) return;
+      if (!E.playing || dead || cd > 0 || prot > 0) return;
       if (shells.filter((s) => s.owner === E.me).length >= 3) return;
-      cd = 0.55;
+      cd = 0.45; flash = 0.08;
       const a = me.t;
       const sx = me.x + Math.cos(a) * (TR + 8), sy = me.y + Math.sin(a) * (TR + 8);
-      const sh = { id: E.me + ':' + (++shellSeq), owner: E.me, x: sx, y: sy, vx: Math.cos(a) * SHELL_SPEED, vy: Math.sin(a) * SHELL_SPEED, bounces: 0, life: 2.0 };
-      shells.push(sh);
+      shells.push({ id: E.me + ':' + (++shellSeq), owner: E.me, x: sx, y: sy, vx: Math.cos(a) * SHELL_SPEED, vy: Math.sin(a) * SHELL_SPEED, bounces: 0, life: 2.6, hist: [] });
       SFX.tank();
+      shake = Math.max(shake, 0.08);
       E.gsend({ fire: [Math.round(sx), Math.round(sy), +a.toFixed(3)] });
     },
 
@@ -1048,7 +1071,7 @@ regGame('tanks', (() => {
       if (d.tk) foe.push({ x: d.tk[0], y: d.tk[1], h: d.tk[2], t: d.tk[3] });
       if (d.fire) {
         const [x, y, a] = d.fire;
-        shells.push({ id: 'r' + Math.random(), owner: 1 - E.me, x, y, vx: Math.cos(a) * SHELL_SPEED, vy: Math.sin(a) * SHELL_SPEED, bounces: 0, life: 2.0 });
+        shells.push({ id: 'r' + Math.random(), owner: 1 - E.me, x, y, vx: Math.cos(a) * SHELL_SPEED, vy: Math.sin(a) * SHELL_SPEED, bounces: 0, life: 2.6, hist: [] });
         SFX.tank();
       }
       if (d.die) { boom(d.die[0], d.die[1], true); foeI = null; foe.clear(); this._foeDead = true; }
@@ -1056,28 +1079,76 @@ regGame('tanks', (() => {
 
     draw() {
       const c = E.ctx;
-      c.fillStyle = '#22252a'; c.fillRect(0, 0, 960, 540);
+      c.save();
+      if (shake > 0) c.translate((Math.random() - 0.5) * shake * 22, (Math.random() - 0.5) * shake * 22);
+      c.fillStyle = '#22252a'; c.fillRect(-12, -12, 984, 564);
       c.strokeStyle = 'rgba(255,255,255,0.03)'; c.lineWidth = 1;
       for (let x = 0; x < 960; x += 60) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, 540); c.stroke(); }
       for (let y = 0; y < 540; y += 60) { c.beginPath(); c.moveTo(0, y); c.lineTo(960, y); c.stroke(); }
+      // tread marks
+      for (const t of treads) {
+        c.save(); c.translate(t.x, t.y); c.rotate(t.h);
+        c.fillStyle = `rgba(0,0,0,${0.14 * Math.min(1, t.life)})`;
+        c.fillRect(-12, -14, 24, 5); c.fillRect(-12, 9, 24, 5);
+        c.restore();
+      }
       for (const [x, y, w, h] of walls) {
         c.fillStyle = '#4a4f57'; c.fillRect(x, y, w, h);
         c.fillStyle = '#5a616b'; c.fillRect(x, y, w, 4);
       }
-      const drawTank = (t, col, isDead) => {
+      // aim preview with first bounce (mine only)
+      if (!dead && E.playing) {
+        let ox = me.x + Math.cos(me.t) * (TR + 8), oy = me.y + Math.sin(me.t) * (TR + 8);
+        let dx = Math.cos(me.t), dy = Math.sin(me.t);
+        let t1 = castWall(ox, oy, dx, dy);
+        c.strokeStyle = E.colors[E.me]; c.globalAlpha = 0.30; c.setLineDash([4, 7]); c.lineWidth = 1.5;
+        c.beginPath(); c.moveTo(ox, oy); c.lineTo(ox + dx * t1, oy + dy * t1); c.stroke();
+        // reflected segment
+        const hx = ox + dx * (t1 - 1), hy = oy + dy * (t1 - 1);
+        let nx = 0, ny = 0, best = 1e9;
+        for (const [x, y, w, h] of walls) {
+          const cc = circleRect(ox + dx * (t1 + 0.5), oy + dy * (t1 + 0.5), 1.2, x, y, w, h);
+          if (cc) { nx = cc.nx; ny = cc.ny; break; }
+        }
+        if (nx || ny) {
+          const dot = dx * nx + dy * ny;
+          const rx = dx - 2 * dot * nx, ry = dy - 2 * dot * ny;
+          const t2 = Math.min(220, castWall(hx, hy, rx, ry));
+          c.globalAlpha = 0.16;
+          c.beginPath(); c.moveTo(hx, hy); c.lineTo(hx + rx * t2, hy + ry * t2); c.stroke();
+        }
+        c.setLineDash([]); c.globalAlpha = 1;
+      }
+      const drawTank = (t, col, isDead, shimmer) => {
         if (isDead) return;
+        if (shimmer) { c.globalAlpha = 0.45 + 0.4 * Math.sin(performance.now() / 60); }
         c.save(); c.translate(t.x, t.y); c.rotate(t.h);
-        c.fillStyle = '#333'; c.fillRect(-14, -16, 28, 7); c.fillRect(-14, 9, 28, 7); // tracks
+        c.fillStyle = '#333'; c.fillRect(-14, -16, 28, 7); c.fillRect(-14, 9, 28, 7);
         c.fillStyle = col; c.beginPath(); c.roundRect(-13, -11, 26, 22, 5); c.fill();
         c.restore();
         c.save(); c.translate(t.x, t.y); c.rotate(t.t);
         c.fillStyle = col; c.beginPath(); c.arc(0, 0, 8, 0, 7); c.fill();
         c.strokeStyle = col; c.lineWidth = 5; c.beginPath(); c.moveTo(0, 0); c.lineTo(24, 0); c.stroke();
         c.restore();
+        c.globalAlpha = 1;
       };
-      if (foeI && !this._foeDead) drawTank(foeI, E.colors[1 - E.me], false);
-      drawTank(me, E.colors[E.me], dead);
+      if (foeI && !this._foeDead) drawTank(foeI, E.colors[1 - E.me], false, false);
+      drawTank(me, E.colors[E.me], dead, prot > 0);
+      // muzzle flash
+      if (flash > 0 && !dead) {
+        const fx = me.x + Math.cos(me.t) * (TR + 12), fy = me.y + Math.sin(me.t) * (TR + 12);
+        c.fillStyle = '#ffd166'; c.globalAlpha = flash / 0.08;
+        c.beginPath(); c.arc(fx, fy, 9, 0, 7); c.fill(); c.globalAlpha = 1;
+      }
+      // shells + trails
       for (const s of shells) {
+        for (let i = 0; i < s.hist.length; i++) {
+          const p = s.hist[i];
+          c.fillStyle = s.bounces > 0 ? '#ff8c42' : '#ccc';
+          c.globalAlpha = (i / s.hist.length) * 0.3;
+          c.beginPath(); c.arc(p.x, p.y, SR * (i / s.hist.length), 0, 7); c.fill();
+        }
+        c.globalAlpha = 1;
         c.fillStyle = s.bounces > 0 ? '#ff8c42' : '#eee';
         c.beginPath(); c.arc(s.x, s.y, SR, 0, 7); c.fill();
       }
@@ -1085,10 +1156,536 @@ regGame('tanks', (() => {
         c.fillStyle = p.c; c.globalAlpha = Math.min(1, p.life * 2);
         c.fillRect(p.x - 3, p.y - 3, 6, 6); c.globalAlpha = 1;
       }
-      if (!dead && cd === 0 && shells.filter((s) => s.owner === E.me).length < 3) {
-        c.fillStyle = 'rgba(255,255,255,0.5)'; c.font = '12px system-ui';
-        c.fillText('READY', me.x - 17, me.y - 24);
+      // ammo pips
+      if (!dead) {
+        const mine = 3 - shells.filter((s) => s.owner === E.me).length;
+        for (let i = 0; i < 3; i++) {
+          c.fillStyle = i < mine ? '#ffd166' : 'rgba(255,255,255,0.15)';
+          c.beginPath(); c.arc(me.x - 12 + i * 12, me.y - 26, 3.2, 0, 7); c.fill();
+        }
       }
+      c.restore();
+    },
+  };
+})());
+
+</script>
+<script>
+// ---- SUMO: shove your rival off a shrinking ice platform ----
+regGame('sumo', (() => {
+  let E, me, foe, foeI, radius, elapsed, fell, foeFell, dashCd, parts;
+  const R = 17, ACC = 720, MAXV = 340, FRICTION = 1.15; // low friction = ice
+  const CX = 480, CY = 270, R0 = 205, RMIN = 88;
+
+  return {
+    name: 'Sumo', ico: '🥋',
+    desc: 'Shrinking ice ring. Shove them off. Don\'t slip.',
+    controls: 'WASD to skate · SPACE to dash · push your rival off the ice',
+
+    init(e) { E = e; },
+
+    newRound() {
+      me = E.me === 0
+        ? { x: CX - 120, y: CY, vx: 0, vy: 0 }
+        : { x: CX + 120, y: CY, vx: 0, vy: 0 };
+      foe = makeInterp(); foeI = null;
+      radius = R0; elapsed = 0;
+      fell = false; foeFell = false;
+      dashCd = 0; parts = [];
+      this._lastSent = 0;
+    },
+
+    update(dt) {
+      if (E.playing) {
+        elapsed += dt;
+        // ring shrinks after a 5s grace period
+        if (elapsed > 5) radius = Math.max(RMIN, R0 - (elapsed - 5) * 9);
+      }
+      if (E.playing && !fell) {
+        let ax = 0, ay = 0;
+        if (E.keys.has('w')) ay -= 1; if (E.keys.has('s')) ay += 1;
+        if (E.keys.has('a')) ax -= 1; if (E.keys.has('d')) ax += 1;
+        if (ax || ay) {
+          const l = Math.hypot(ax, ay);
+          me.vx += (ax / l) * ACC * dt; me.vy += (ay / l) * ACC * dt;
+        }
+        dashCd = Math.max(0, dashCd - dt);
+        if (E.keys.has(' ') && dashCd === 0 && (ax || ay)) {
+          const l = Math.hypot(ax, ay) || 1;
+          me.vx += (ax / l) * 380; me.vy += (ay / l) * 380;
+          dashCd = 1.5;
+          SFX.go();
+          for (let i = 0; i < 8; i++) parts.push({ x: me.x, y: me.y, vx: -(ax) * 60 + (Math.random() - 0.5) * 80, vy: -(ay) * 60 + (Math.random() - 0.5) * 80, life: 0.4, c: '#bfe9ff' });
+        }
+        // ice friction (light)
+        me.vx *= Math.max(0, 1 - FRICTION * dt);
+        me.vy *= Math.max(0, 1 - FRICTION * dt);
+        const sp = Math.hypot(me.vx, me.vy);
+        if (sp > MAXV + 400) { me.vx *= (MAXV + 400) / sp; me.vy *= (MAXV + 400) / sp; }
+        me.x += me.vx * dt; me.y += me.vy * dt;
+
+        // shove: symmetric spring push against opponent (each side moves own body)
+        if (foeI && !foeFell) {
+          const dx = me.x - foeI.x, dy = me.y - foeI.y;
+          const d = Math.hypot(dx, dy);
+          if (d < R * 2 && d > 0.001) {
+            const overlap = R * 2 - d;
+            const nx = dx / d, ny = dy / d;
+            me.x += nx * overlap * 0.5;
+            me.y += ny * overlap * 0.5;
+            me.vx += nx * overlap * 26 * dt * 60;
+            me.vy += ny * overlap * 26 * dt * 60;
+            if (!this._touch) { SFX.paddle(); this._touch = true; }
+          } else this._touch = false;
+        }
+
+        // fell off?
+        const dc = Math.hypot(me.x - CX, me.y - CY);
+        if (dc > radius + R * 0.4) {
+          fell = true;
+          SFX.losePoint(); SFX.boom();
+          E.gsend({ fell: [Math.round(me.x), Math.round(me.y)] });
+          E.claimPoint(1 - E.me);
+        }
+      }
+      parts.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; });
+      parts = parts.filter((p) => p.life > 0);
+
+      this._lastSent += dt;
+      if (this._lastSent > 1 / 30 && !fell) {
+        this._lastSent = 0;
+        E.gsend({ su: [Math.round(me.x), Math.round(me.y)] });
+      }
+      foeI = foe.get(['x', 'y']);
+    },
+
+    onNet(d) {
+      if (d.su) foe.push({ x: d.su[0], y: d.su[1] });
+      if (d.fell) { foeFell = true; SFX.boom(); }
+    },
+
+    draw() {
+      const c = E.ctx;
+      // dark water
+      c.fillStyle = '#0b1b2b'; c.fillRect(0, 0, 960, 540);
+      c.fillStyle = 'rgba(77,195,255,0.05)';
+      for (let i = 0; i < 6; i++) c.fillRect(0, 90 * i + (Math.sin(performance.now() / 900 + i) * 6), 960, 3);
+      // platform
+      const grd = c.createRadialGradient(CX, CY, radius * 0.2, CX, CY, radius);
+      grd.addColorStop(0, '#dfeefb'); grd.addColorStop(1, '#a8c9e6');
+      c.fillStyle = grd;
+      c.beginPath(); c.arc(CX, CY, radius, 0, 7); c.fill();
+      c.strokeStyle = radius <= RMIN + 1 ? '#e63946' : '#6fa3cc';
+      c.lineWidth = 5; c.stroke();
+      // shrink warning ring
+      if (elapsed > 5 && radius > RMIN + 1) {
+        c.strokeStyle = 'rgba(230,57,70,0.4)'; c.setLineDash([8, 10]); c.lineWidth = 2;
+        c.beginPath(); c.arc(CX, CY, RMIN, 0, 7); c.stroke(); c.setLineDash([]);
+      }
+      // center emblem
+      c.strokeStyle = 'rgba(50,90,130,0.35)'; c.lineWidth = 3;
+      c.beginPath(); c.arc(CX, CY, 34, 0, 7); c.stroke();
+      const drawP = (p, col, down) => {
+        if (down) return;
+        c.fillStyle = 'rgba(0,0,0,0.25)';
+        c.beginPath(); c.ellipse(p.x, p.y + R * 0.72, R * 0.95, R * 0.4, 0, 0, 7); c.fill();
+        c.fillStyle = col;
+        c.beginPath(); c.arc(p.x, p.y, R, 0, 7); c.fill();
+        c.strokeStyle = '#0a0e14'; c.lineWidth = 2.5; c.stroke();
+        // headband
+        c.strokeStyle = '#fff'; c.lineWidth = 4;
+        c.beginPath(); c.arc(p.x, p.y, R - 4, -2.5, -0.6); c.stroke();
+      };
+      if (foeI) drawP(foeI, E.colors[1 - E.me], foeFell);
+      drawP(me, E.colors[E.me], fell);
+      for (const p of parts) {
+        c.fillStyle = p.c; c.globalAlpha = p.life * 2.2;
+        c.fillRect(p.x - 2, p.y - 2, 4, 4); c.globalAlpha = 1;
+      }
+      // dash meter
+      if (!fell) {
+        c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(me.x - 16, me.y - 30, 32, 5);
+        c.fillStyle = dashCd === 0 ? '#3ddc84' : '#ffd166';
+        c.fillRect(me.x - 16, me.y - 30, 32 * (1 - dashCd / 1.5), 5);
+      }
+      if (E.playing && elapsed < 5) {
+        c.fillStyle = 'rgba(255,255,255,0.55)'; c.font = 'bold 15px system-ui'; c.textAlign = 'center';
+        c.fillText(`ring shrinks in ${Math.ceil(5 - elapsed)}…`, CX, 46); c.textAlign = 'left';
+      }
+    },
+  };
+})());
+
+</script>
+<script>
+// ---- BOMB ARENA: bomberman-style. WASD + SPACE. Crates, power-ups, up to 2 bots. ----
+// Each client simulates all bombs/flames locally from placement events; you detect
+// your own death (fair under latency). Host runs the bots. First human down loses the round.
+regGame('bomb', (() => {
+  let E, grid, powerups, bombs, flames, me, foe, foeI, bots, dead, foeDead, parts, cfgBots;
+  const COLS = 15, ROWS = 9, CS = 60, OX = 30, OY = 0, PR = 16;
+  const BOT_COLS = ['#b98af7', '#8ee6a1'];
+  const FUSE = 2.5, FLAME_T = 0.5;
+
+  const cellAt = (px, py) => [clamp(Math.round((px - OX - CS / 2) / CS), 0, COLS - 1), clamp(Math.round((py - OY - CS / 2) / CS), 0, ROWS - 1)];
+  const cellXY = (cx, cy) => [OX + cx * CS + CS / 2, OY + cy * CS + CS / 2];
+  const isPillar = (cx, cy) => cx % 2 === 1 && cy % 2 === 1;
+  const inGrid = (cx, cy) => cx >= 0 && cx < COLS && cy >= 0 && cy < ROWS;
+  const key = (cx, cy) => cx + ',' + cy;
+
+  function solidAt(cx, cy, forWho) {
+    if (!inGrid(cx, cy)) return true;
+    if (isPillar(cx, cy)) return true;
+    if (grid[cy][cx] === 1) return true; // crate
+    for (const b of bombs) {
+      if (b.cx === cx && b.cy === cy) {
+        if (forWho && forWho.ghostBomb === b) continue; // still standing on own fresh bomb
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function moveActor(a, vx, vy, dt, speed) {
+    const step = (dx, dy) => {
+      a.x += dx; a.y += dy;
+      const solids = [];
+      const [ccx, ccy] = cellAt(a.x, a.y);
+      for (let cy = ccy - 1; cy <= ccy + 1; cy++) for (let cx = ccx - 1; cx <= ccx + 1; cx++) {
+        if (solidAt(cx, cy, a)) solids.push([OX + cx * CS, OY + cy * CS]);
+      }
+      for (const [rx, ry] of solids) {
+        const c = circleRect(a.x, a.y, PR, rx, ry, CS, CS);
+        if (c) { a.x = c.x; a.y = c.y; }
+      }
+      a.x = clamp(a.x, OX + PR, OX + COLS * CS - PR);
+      a.y = clamp(a.y, OY + PR, OY + ROWS * CS - PR);
+    };
+    if (vx || vy) {
+      const l = Math.hypot(vx, vy);
+      step((vx / l) * speed * dt, 0);
+      step(0, (vy / l) * speed * dt);
+      // leave own bomb cell -> it becomes solid
+      if (a.ghostBomb) {
+        const [cx, cy] = cellAt(a.x, a.y);
+        if (cx !== a.ghostBomb.cx || cy !== a.ghostBomb.cy) a.ghostBomb = null;
+      }
+    }
+  }
+
+  function placeBomb(owner, cx, cy, r) {
+    if (bombs.some((b) => b.cx === cx && b.cy === cy)) return null;
+    const b = { cx, cy, r, fuse: FUSE, owner };
+    bombs.push(b);
+    SFX.putt();
+    return b;
+  }
+
+  function explode(b) {
+    SFX.boom();
+    const cells = [[b.cx, b.cy]];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (let i = 1; i <= b.r; i++) {
+        const cx = b.cx + dx * i, cy = b.cy + dy * i;
+        if (!inGrid(cx, cy) || isPillar(cx, cy)) break;
+        cells.push([cx, cy]);
+        const ob = bombs.find((o) => o.cx === cx && o.cy === cy);
+        if (ob && ob.fuse > 0.08) ob.fuse = 0.08; // chain
+        if (grid[cy][cx] === 1) { // crate: destroy, reveal loot, stop ray
+          grid[cy][cx] = 0;
+          const pu = powerups.hidden[key(cx, cy)];
+          if (pu) powerups.live[key(cx, cy)] = pu;
+          for (let p = 0; p < 5; p++) parts.push({ x: cellXY(cx, cy)[0], y: cellXY(cx, cy)[1], vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200 - 60, life: 0.5, c: '#c9944a' });
+          break;
+        }
+      }
+    }
+    for (const [cx, cy] of cells) flames[key(cx, cy)] = FLAME_T;
+  }
+
+  function inFlames(x, y) {
+    const [cx, cy] = cellAt(x, y);
+    for (const [dcx, dcy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const k = key(cx + dcx, cy + dcy);
+      if (flames[k]) {
+        const [fx, fy] = cellXY(cx + dcx, cy + dcy);
+        if (circleRect(x, y, PR - 5, fx - CS / 2 + 6, fy - CS / 2 + 6, CS - 12, CS - 12)) return true;
+      }
+    }
+    return false;
+  }
+
+  // --- bot brain (host only) ---
+  function dangerMap() {
+    const d = {};
+    for (const k in flames) d[k] = true;
+    for (const b of bombs) {
+      d[key(b.cx, b.cy)] = true;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        for (let i = 1; i <= b.r; i++) {
+          const cx = b.cx + dx * i, cy = b.cy + dy * i;
+          if (!inGrid(cx, cy) || isPillar(cx, cy)) break;
+          d[key(cx, cy)] = true;
+          if (grid[cy][cx] === 1) break;
+        }
+      }
+    }
+    return d;
+  }
+  function bfs(scx, scy, goalFn, danger, allowDanger) {
+    const q = [[scx, scy]], prev = {}, seen = { [key(scx, scy)]: true };
+    while (q.length) {
+      const [cx, cy] = q.shift();
+      if (goalFn(cx, cy)) {
+        const path = [];
+        let k = key(cx, cy);
+        let cur = [cx, cy];
+        while (cur) { path.unshift(cur); cur = prev[key(cur[0], cur[1])]; }
+        return path;
+      }
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + dx, ny = cy + dy, k = key(nx, ny);
+        if (!inGrid(nx, ny) || seen[k] || isPillar(nx, ny) || grid[ny][nx] === 1) continue;
+        if (bombs.some((b) => b.cx === nx && b.cy === ny)) continue;
+        if (!allowDanger && danger[k]) continue;
+        seen[k] = true; prev[k] = [cx, cy]; q.push([nx, ny]);
+      }
+    }
+    return null;
+  }
+  function botThink(bot, dt) {
+    bot.think -= dt;
+    if (bot.think > 0) return;
+    bot.think = 0.12;
+    const [cx, cy] = cellAt(bot.x, bot.y);
+    const danger = dangerMap();
+    let path = null;
+    if (danger[key(cx, cy)]) {
+      path = bfs(cx, cy, (x, y) => !danger[key(x, y)], danger, true); // flee
+    } else {
+      // bomb if next to a crate or close to a human
+      const nearCrate = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => inGrid(cx + dx, cy + dy) && grid[cy + dy][cx + dx] === 1);
+      const humans = [me, foeI].filter(Boolean).filter((h) => !(h === me && dead) && !(h === foeI && foeDead));
+      const nearHuman = humans.some((h) => { const [hx, hy] = cellAt(h.x, h.y); return Math.abs(hx - cx) + Math.abs(hy - cy) <= 2; });
+      if (bot.bombs > 0 && (nearCrate || nearHuman) && Math.random() < 0.6) {
+        const nb = placeBomb('bot' + bot.i, cx, cy, 2);
+        if (nb) {
+          bot.bombs--; nb.onDone = () => bot.bombs++;
+          bot.ghostBomb = nb;
+          E.gsend({ bb: [bot.i, cx, cy, 2] });
+          const d2m = dangerMap();
+          path = bfs(cx, cy, (x, y) => !d2m[key(x, y)], d2m, true);
+        }
+      }
+      if (!path) {
+        const targets = (x, y) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => inGrid(x + dx, y + dy) && grid[y + dy][x + dx] === 1)
+          || (powerups.live[key(x, y)] != null);
+        path = bfs(cx, cy, targets, danger, false);
+      }
+    }
+    bot.path = path && path.length > 1 ? path.slice(1) : null;
+  }
+  function botMove(bot, dt) {
+    botThink(bot, dt);
+    if (!bot.path || !bot.path.length) return;
+    const [tx, ty] = cellXY(bot.path[0][0], bot.path[0][1]);
+    const dx = tx - bot.x, dy = ty - bot.y;
+    if (Math.hypot(dx, dy) < 6) { bot.path.shift(); return; }
+    moveActor(bot, dx, dy, dt, 118);
+  }
+
+  return {
+    name: 'Bomb Arena', ico: '💣',
+    desc: 'Crates, power-ups, big chains. Add bots in the lobby!',
+    controls: 'WASD move · SPACE drops a bomb · grab 💣/🔥/⚡ power-ups · don\'t nuke yourself',
+
+    init(e) { E = e; },
+
+    newRound() {
+      cfgBots = (E.opts && E.opts.bots) || 0;
+      grid = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+      powerups = { hidden: {}, live: {} };
+      const spawns = [[0, 0], [COLS - 1, ROWS - 1], [COLS - 1, 0], [0, ROWS - 1]];
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+        if (isPillar(x, y)) continue;
+        if (spawns.some(([sx, sy]) => Math.abs(sx - x) + Math.abs(sy - y) <= 2)) continue;
+        if (E.rand() < 0.62) {
+          grid[y][x] = 1;
+          const r = E.rand();
+          if (r < 0.13) powerups.hidden[key(x, y)] = 'bomb';
+          else if (r < 0.26) powerups.hidden[key(x, y)] = 'fire';
+          else if (r < 0.36) powerups.hidden[key(x, y)] = 'speed';
+        }
+      }
+      const myS = spawns[E.me], foS = spawns[1 - E.me];
+      me = { x: cellXY(...myS)[0], y: cellXY(...myS)[1], speed: 150, maxBombs: 1, bombs: 1, radius: 2, ghostBomb: null };
+      foe = makeInterp(); foeI = null;
+      bots = [];
+      for (let i = 0; i < cfgBots; i++) {
+        const s = spawns[2 + i];
+        bots.push({ i, x: cellXY(...s)[0], y: cellXY(...s)[1], alive: true, bombs: 1, think: 0.5 + i * 0.3, path: null, ghostBomb: null });
+      }
+      bombs = []; flames = {}; parts = [];
+      dead = false; foeDead = false;
+      this._lastSent = 0; this._foeStats = { radius: 2 };
+    },
+
+    update(dt) {
+      // bombs & flames (simulated locally on both sides)
+      for (const b of bombs) {
+        b.fuse -= dt;
+        if (b.fuse <= 0) { explode(b); if (b.onDone) b.onDone(); b.dead = true; }
+      }
+      bombs = bombs.filter((b) => !b.dead);
+      for (const k in flames) { flames[k] -= dt; if (flames[k] <= 0) delete flames[k]; }
+      parts.forEach((p) => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt; p.life -= dt; });
+      parts = parts.filter((p) => p.life > 0);
+
+      if (E.playing && !dead) {
+        let vx = 0, vy = 0;
+        if (E.keys.has('w')) vy -= 1; if (E.keys.has('s')) vy += 1;
+        if (E.keys.has('a')) vx -= 1; if (E.keys.has('d')) vx += 1;
+        moveActor(me, vx, vy, dt, me.speed);
+        // pickups
+        const [cx, cy] = cellAt(me.x, me.y);
+        const pu = powerups.live[key(cx, cy)];
+        if (pu) {
+          delete powerups.live[key(cx, cy)];
+          if (pu === 'bomb') { me.maxBombs = Math.min(4, me.maxBombs + 1); me.bombs++; }
+          if (pu === 'fire') me.radius = Math.min(6, me.radius + 1);
+          if (pu === 'speed') me.speed = Math.min(230, me.speed + 22);
+          SFX.point();
+          E.gsend({ pu: [cx, cy] });
+        }
+        // death check (own screen decides — fair under lag)
+        if (inFlames(me.x, me.y)) {
+          dead = true;
+          SFX.hit(); SFX.boom();
+          for (let i = 0; i < 20; i++) parts.push({ x: me.x, y: me.y, vx: (Math.random() - 0.5) * 300, vy: (Math.random() - 0.5) * 300, life: 0.7, c: E.colors[E.me] });
+          E.gsend({ die: 1 });
+          E.claimPoint(1 - E.me);
+        }
+      }
+
+      // host runs bots
+      if (E.isHost && E.playing) {
+        for (const bot of bots) {
+          if (!bot.alive) continue;
+          botMove(bot, dt);
+          if (inFlames(bot.x, bot.y)) {
+            bot.alive = false;
+            SFX.boom();
+            for (let i = 0; i < 14; i++) parts.push({ x: bot.x, y: bot.y, vx: (Math.random() - 0.5) * 260, vy: (Math.random() - 0.5) * 260, life: 0.6, c: BOT_COLS[bot.i] });
+            E.gsend({ bd: bot.i });
+          }
+        }
+      }
+
+      this._lastSent += dt;
+      if (this._lastSent > 1 / 30) {
+        this._lastSent = 0;
+        if (!dead) E.gsend({ bp: [Math.round(me.x), Math.round(me.y)] });
+        if (E.isHost) for (const bot of bots) if (bot.alive) E.gsend({ bt: [bot.i, Math.round(bot.x), Math.round(bot.y)] });
+      }
+      foeI = foe.get(['x', 'y']);
+    },
+
+    onKey(k) {
+      if (k !== ' ' || !E.playing || dead || me.bombs <= 0) return;
+      const [cx, cy] = cellAt(me.x, me.y);
+      const b = placeBomb(E.me, cx, cy, me.radius);
+      if (b) {
+        me.bombs--; b.onDone = () => me.bombs++;
+        me.ghostBomb = b;
+        E.gsend({ bomb: [cx, cy, me.radius] });
+      }
+    },
+
+    onNet(d) {
+      if (d.bp) foe.push({ x: d.bp[0], y: d.bp[1] });
+      if (d.bomb) placeBomb(1 - E.me, d.bomb[0], d.bomb[1], d.bomb[2]);
+      if (d.pu) delete powerups.live[key(d.pu[0], d.pu[1])];
+      if (d.die) { foeDead = true; SFX.boom(); }
+      if (d.bt) { const bot = bots[d.bt[0]]; if (bot) { bot.x = d.bt[1]; bot.y = d.bt[2]; } }
+      if (d.bb) placeBomb('bot' + d.bb[0], d.bb[1], d.bb[2], d.bb[3]);
+      if (d.bd != null && bots[d.bd]) { bots[d.bd].alive = false; SFX.boom(); }
+    },
+
+    draw() {
+      const c = E.ctx;
+      c.fillStyle = '#254d2e'; c.fillRect(0, 0, 960, 540);
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+        const px = OX + x * CS, py = OY + y * CS;
+        c.fillStyle = (x + y) % 2 ? '#2c5a36' : '#2a5432';
+        c.fillRect(px, py, CS, CS);
+        if (isPillar(x, y)) {
+          c.fillStyle = '#5a616b'; c.fillRect(px + 2, py + 2, CS - 4, CS - 4);
+          c.fillStyle = '#6b7480'; c.fillRect(px + 2, py + 2, CS - 4, 8);
+        } else if (grid[y][x] === 1) {
+          c.fillStyle = '#a5732f'; c.fillRect(px + 4, py + 4, CS - 8, CS - 8);
+          c.strokeStyle = '#7d5620'; c.lineWidth = 2;
+          c.strokeRect(px + 4, py + 4, CS - 8, CS - 8);
+          c.beginPath(); c.moveTo(px + 4, py + CS / 2); c.lineTo(px + CS - 4, py + CS / 2);
+          c.moveTo(px + CS / 2, py + 4); c.lineTo(px + CS / 2, py + CS - 4); c.stroke();
+        }
+      }
+      // side gutters
+      c.fillStyle = '#17351d'; c.fillRect(0, 0, OX, 540); c.fillRect(960 - OX, 0, OX, 540);
+      // powerups
+      for (const k in powerups.live) {
+        const [cx, cy] = k.split(',').map(Number);
+        const [px, py] = cellXY(cx, cy);
+        c.fillStyle = '#0a0e14'; c.beginPath(); c.arc(px, py, 16, 0, 7); c.fill();
+        const t = powerups.live[k];
+        c.strokeStyle = t === 'bomb' ? '#4dc3ff' : t === 'fire' ? '#ff8c42' : '#3ddc84';
+        c.lineWidth = 3; c.stroke();
+        c.font = '16px system-ui'; c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText(t === 'bomb' ? '💣' : t === 'fire' ? '🔥' : '⚡', px, py + 1);
+        c.textBaseline = 'alphabetic'; c.textAlign = 'left';
+      }
+      // bombs
+      for (const b of bombs) {
+        const [px, py] = cellXY(b.cx, b.cy);
+        const pulse = 1 + Math.sin((FUSE - b.fuse) * (6 + (FUSE - b.fuse) * 6)) * 0.08;
+        c.fillStyle = '#14181f';
+        c.beginPath(); c.arc(px, py + 2, 17 * pulse, 0, 7); c.fill();
+        c.strokeStyle = '#2e3947'; c.lineWidth = 2; c.stroke();
+        c.strokeStyle = '#c9944a'; c.lineWidth = 3;
+        c.beginPath(); c.moveTo(px + 6, py - 12); c.quadraticCurveTo(px + 14, py - 22, px + 8, py - 26); c.stroke();
+        if (Math.floor(b.fuse * 10) % 2 === 0) { c.fillStyle = '#ffd166'; c.beginPath(); c.arc(px + 8, py - 26, 3.5, 0, 7); c.fill(); }
+      }
+      // flames
+      for (const k in flames) {
+        const [cx, cy] = k.split(',').map(Number);
+        const px = OX + cx * CS, py = OY + cy * CS;
+        const a = clamp(flames[k] / FLAME_T, 0, 1);
+        c.fillStyle = `rgba(255,140,66,${0.85 * a})`;
+        c.fillRect(px + 4, py + 4, CS - 8, CS - 8);
+        c.fillStyle = `rgba(255,209,102,${0.9 * a})`;
+        c.fillRect(px + 14, py + 14, CS - 28, CS - 28);
+      }
+      // players & bots
+      const drawGuy = (x, y, col, isDead) => {
+        if (isDead) return;
+        c.fillStyle = 'rgba(0,0,0,0.3)'; c.beginPath(); c.ellipse(x, y + 12, 13, 6, 0, 0, 7); c.fill();
+        c.fillStyle = col; c.beginPath(); c.arc(x, y, PR - 1, 0, 7); c.fill();
+        c.strokeStyle = '#0a0e14'; c.lineWidth = 2; c.stroke();
+        c.fillStyle = '#fff'; c.beginPath(); c.arc(x - 5, y - 3, 3.4, 0, 7); c.arc(x + 5, y - 3, 3.4, 0, 7); c.fill();
+        c.fillStyle = '#111'; c.beginPath(); c.arc(x - 4.6, y - 3, 1.7, 0, 7); c.arc(x + 5.4, y - 3, 1.7, 0, 7); c.fill();
+      };
+      for (const bot of bots) drawGuy(bot.x, bot.y, BOT_COLS[bot.i], !bot.alive);
+      if (foeI) drawGuy(foeI.x, foeI.y, E.colors[1 - E.me], foeDead);
+      drawGuy(me.x, me.y, E.colors[E.me], dead);
+      for (const p of parts) {
+        c.fillStyle = p.c; c.globalAlpha = Math.min(1, p.life * 2);
+        c.fillRect(p.x - 3, p.y - 3, 6, 6); c.globalAlpha = 1;
+      }
+      // my loadout
+      c.font = 'bold 14px system-ui'; c.textAlign = 'center';
+      c.fillStyle = 'rgba(0,0,0,0.45)'; c.fillRect(400, 2, 160, 20);
+      c.fillStyle = 'rgba(255,255,255,0.9)';
+      c.fillText(`💣${me.maxBombs}  🔥${me.radius}  ⚡${(me.speed / 150).toFixed(1)}x`, 480, 17);
+      c.textAlign = 'left';
     },
   };
 })());
@@ -1252,6 +1849,7 @@ regGame('quickdraw', (() => {
 
   let appState = 'menu';        // menu | wait | lobby | game
   let curGameId = null, game = null;
+  let botsN = 0;                // Bomb Arena bots (synced between players)
   let score = [0, 0], round = 0, wins = {}; // wins[gameId] = [w0,w1]
   let roundTimers = [];
   let myCode = '';
@@ -1360,7 +1958,8 @@ regGame('quickdraw', (() => {
     switch (m.t) {
       case 'g': if (game && appState === 'game') game.onNet(m.d); break;
       case 'startreq': if (Net.isHost && appState === 'lobby') hostStartGame(m.game); break;
-      case 'start': if (!Net.isHost) beginGame(m.game, m.seed); break;
+      case 'start': if (!Net.isHost) beginGame(m.game, m.seed, m.opts); break;
+      case 'bots': botsN = m.n; syncBotChips(); break;
       case 'round': if (!Net.isHost && appState === 'game') startRound(m.seed, m.n); break;
       case 'score': if (!Net.isHost) { score = m.s.slice(); handleScored(m.w); } break;
       case 'claim': if (Net.isHost) applyPoint(m.w); break;
@@ -1384,6 +1983,22 @@ regGame('quickdraw', (() => {
       const d = document.createElement('div');
       d.className = 'gcard';
       d.innerHTML = `<div class="ico">${G.ico}</div><div class="nm">${G.name}</div><div class="ds">${G.desc}</div>`;
+      if (id === 'bomb') {
+        const row = document.createElement('div');
+        row.className = 'botrow';
+        row.innerHTML = `<span class="botlbl">bots:</span>` +
+          [0, 1, 2].map((n) => `<span class="botchip${n === botsN ? ' onn' : ''}" data-n="${n}">${n}</span>`).join('');
+        row.querySelectorAll('.botchip').forEach((ch) => {
+          ch.onclick = (ev) => {
+            ev.stopPropagation();
+            botsN = parseInt(ch.dataset.n, 10);
+            syncBotChips();
+            Net.send({ t: 'bots', n: botsN });
+            SFX.click();
+          };
+        });
+        d.appendChild(row);
+      }
       d.onclick = () => {
         SFX.click();
         if (Net.isHost) hostStartGame(id);
@@ -1410,14 +2025,21 @@ regGame('quickdraw', (() => {
   function clearTimers() { roundTimers.forEach(clearTimeout); roundTimers = []; }
   function later(fn, ms) { roundTimers.push(setTimeout(fn, ms)); }
 
+  function syncBotChips() {
+    document.querySelectorAll('.botchip').forEach((ch) => {
+      ch.classList.toggle('onn', parseInt(ch.dataset.n, 10) === botsN);
+    });
+  }
   function hostStartGame(id) {
     if (!GAMES[id]) return;
     const seed = (Math.random() * 0x7fffffff) | 0;
-    Net.send({ t: 'start', game: id, seed });
-    beginGame(id, seed);
+    const opts = { bots: botsN };
+    Net.send({ t: 'start', game: id, seed, opts });
+    beginGame(id, seed, opts);
   }
-  function beginGame(id, seed) {
+  function beginGame(id, seed, opts) {
     clearTimers();
+    E.opts = opts || {};
     curGameId = id;
     game = GAMES[id];
     score = [0, 0]; round = 0;
@@ -1516,7 +2138,8 @@ regGame('quickdraw', (() => {
     const r = cv.getBoundingClientRect();
     return { x: (ev.clientX - r.left) * (960 / r.width), y: (ev.clientY - r.top) * (540 / r.height) };
   }
-  cv.addEventListener('mousemove', (ev) => {
+  // listen on window so drags keep working outside the canvas (e.g. golf power pull)
+  window.addEventListener('mousemove', (ev) => {
     const p = mousePos(ev);
     E.mouse.x = p.x; E.mouse.y = p.y;
     if (game && game.onMove) game.onMove(p.x, p.y);
